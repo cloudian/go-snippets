@@ -25,6 +25,8 @@ import "os"
 import "unsafe"
 import "flag"
 // #include <fcntl.h>
+// #include <sys/types.h>
+// #include <sys/bio.h>
 // #include <geom/gate/g_gate.h>
 import "C"
 
@@ -32,8 +34,8 @@ var flag_one = flag.String("c", "", "create or destroy")
 var the_unit = flag.Int("u", -1, "unit number")
 
 func serve(unit C.int) {
-    cio := g_gate_ctl_io{
-            gctl_version: C.GATE_VERSION,
+    cio := C.struct_g_gate_ctl_io{
+            gctl_version: C.G_GATE_VERSION,
             gctl_unit: unit,
             gctl_error: 0,
     }
