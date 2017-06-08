@@ -136,7 +136,6 @@ L1:
                     go func (disk *Disk) {
                         iarg := <-rch
                         oarg := new(Args)
-                        fmt.Println(len(iarg.Blob), iarg.Offset)
                         if ioerr := disk.Client.Call("NadServer.Get", iarg, oarg); ioerr != nil {
                             fmt.Println("Error reading from", disk.Host, ioerr)
                         } else {
@@ -160,7 +159,6 @@ L1:
                 arg = Args{Blob: C.GoBytes(cio.gctl_data, C.int(cio.gctl_length)), Offset: int64(cio.gctl_offset),}
                 wch := make(chan *Args)
                 wrcv := make(chan int, len(disks))
-                fmt.Println("chan for ", len(disks))
                 for _, disk := range disks {
                     go func (disk *Disk) {
                         var reply int = 0
