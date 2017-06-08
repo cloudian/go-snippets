@@ -19,19 +19,37 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 package main
 
-import "fmt"
-import "syscall"
-import "os"
-import "unsafe"
-import "flag"
+import (
+		"fmt"
+		"syscall"
+		"os"
+		"unsafe"
+		"flag"
+        "net/rpc"
+)
+
 // #include <fcntl.h>
 // #include <sys/types.h>
 // #include <sys/bio.h>
 // #include <geom/gate/g_gate.h>
 import "C"
 
-var flag_one = flag.String("c", "", "create or destroy")
-var the_unit = flag.Int("u", -1, "unit number")
+type Info struct {
+    Mediasize int64
+}
+
+type Args struct {
+	Offset int64
+	Blob []byte
+}
+
+var command_flag = flag.String("c", "", "create or destroy")
+var unit_flag = flag.Int("u", -1, "unit number")
+var host_flag = flag.String("h", "", "remote rpc hosts serving this disk separated by comma if more than one, e.g. 1.2.3.4:5001")
+var media_flag = flag.Uint64("m", 0, "media size in bytes")
+var block_flag = flag.Uint64("b", 4096, "block size in bytes, default 4096")
+var file_flag = flag.String("f", "", "File to use as a disk, requires no hosts set via -h")
+var client *rpc.Client
 
 func serve(unit C.int) {
     cio := C.struct_g_gate_ctl_io{
@@ -50,7 +68,7 @@ func serve(unit C.int) {
             case C.BIO_WRITE:
 
             default:
-        } 
+        }
         //send done
     }
 }
@@ -70,6 +88,33 @@ func serve(unit C.int) {
 func main() {
     flag.Parse()
 
+    if *host_flag != "" {
+        //connect to each host specified
+        //check that the disks offered are of the same media and block size
+        var err error
+        client, err = rpc.Dial("tcp", *host_flag)
+        if err != nil {
+            fmt.Println("Unable to connect to rpc server", err)
+            return
+        } else {
+            var info = Info{}
+            var oinfo = new(Info)
+            if err = client.Call("NadServer.Info", &info, oinfo); err != nil {
+                fmt.Println("An error occured", err)
+                client.Close()
+                return
+            } else {
+                fmt.Println("Disk has mediasize", oinfo.Mediasize)
+                client.Close()
+                return
+            }
+        }
+    }
+
+    if *file_flag != "" {
+        //file backend
+    }
+
     gctl, err := os.OpenFile("/dev/ggctl", os.O_RDWR, 0644)
     if err != nil {
         fmt.Println(err)
@@ -77,16 +122,22 @@ func main() {
     }
     defer gctl.Close()
 
-    switch *flag_one {
+    switch *command_flag {
         case "create":
+            if *media_flag == 0 || *block_flag == 0 || (*media_flag % *block_flag) != 0 {
+                fmt.Println("media size and block size have to be greater than 0")
+                fmt.Println("media size has to be a multiple of block size")
+                return
+            }
+
             cs := C.struct_g_gate_ctl_create{
                 gctl_version: C.G_GATE_VERSION, 
-                gctl_mediasize: 107374182400, 
-                gctl_sectorsize: 4096, 
+                gctl_mediasize: C.off_t(*media_flag), 
+                gctl_sectorsize: C.u_int(*block_flag), 
                 gctl_flags: 0,
-                gctl_maxcount: 16, 
+                gctl_maxcount: 256, 
                 gctl_timeout: 1, 
-                gctl_unit: C.int(*the_unit),
+                gctl_unit: C.int(*unit_flag),
             }
             _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(gctl.Fd()),C.G_GATE_CMD_CREATE, uintptr(unsafe.Pointer(&cs))) 
             fmt.Println("create", errno)
@@ -94,12 +145,12 @@ func main() {
             cs := C.struct_g_gate_ctl_destroy{
                 gctl_version: C.G_GATE_VERSION, 
                 gctl_force: 0,
-                gctl_unit: C.int(*the_unit),
+                gctl_unit: C.int(*unit_flag),
             }
             _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(gctl.Fd()),C.G_GATE_CMD_DESTROY, uintptr(unsafe.Pointer(&cs))) 
             fmt.Println("destroy", errno)
         default:
-            fmt.Println("No clue how to handle command '", *flag_one, "'")
+            fmt.Println("No clue how to handle command '", *command_flag, "'")
     }
 }
 
