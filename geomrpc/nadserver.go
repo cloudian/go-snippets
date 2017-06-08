@@ -59,6 +59,8 @@ func (t *NadServer) Info(info *Info, oinfo *Info) error {
 }
 
 func (t *NadServer) Get(args *Args, rargs *Args) error {
+    fmt.Println("Get call", len(args.Blob))
+    rargs.Blob = make([]byte, len(args.Blob))
     bytesRead, err := rfh.ReadAt(rargs.Blob, args.Offset)
     if err != nil {
         fmt.Println("Error reading from file:", err)
@@ -74,6 +76,7 @@ func (t *NadServer) Get(args *Args, rargs *Args) error {
 }
 
 func (t *NadServer) Put(args *Args, reply *int) error {
+    fmt.Println("Put call")
     if written, err := wfh.WriteAt(args.Blob, args.Offset); err != nil {
         fmt.Println("Error writing to file:", err)
         return err;
