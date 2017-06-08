@@ -67,7 +67,7 @@ type Args struct {
 
 
 var gctl *os.File
-var command_flag = flag.String("c", "", "create, destroy, discover, list")
+var command_flag = flag.String("c", "", "create, destroy, discover, list, attach")
 var unit_flag = flag.Int("u", -1, "unit number")
 var host_flag = flag.String("h", "", "remote rpc hosts serving this disk separated by comma if more than one, e.g. 1.2.3.4:5001")
 var block_flag = flag.Int64("b", 4096, "block size in bytes, default 4096")
@@ -85,18 +85,20 @@ func serve(unit int) {
     }
 
     var bsize C.off_t = cio.gctl_length
-    cio.gctl_data = C.malloc(C.size_t(bsize))
-    if C.is_null(cio.gctl_data) == 1 {
-        panic("Out of memory.")
-    }
+    cio.gctl_data = C.CBytes(make([]byte, cio.gctl_length))
 
     var err C.int = 0
     var arg Args
 
     for {
 L1:
+        if bsize > cio.gctl_length {
+            cio.gctl_length = bsize
+        }
         cio.gctl_error = 0
-        _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(gctl.Fd()),C.G_GATE_CMD_START, uintptr(unsafe.Pointer(&cio))) 
+        _, _, errno := syscall.Syscall(syscall.SYS_IOCTL,
+                uintptr(gctl.Fd()),C.G_GATE_CMD_START,
+                uintptr(unsafe.Pointer(&cio)))
         if errno != 0 {
             panic("ioctl syscall failed G_GATE_CMD_START")
         }
@@ -108,9 +110,13 @@ L1:
                 fmt.Println("io cancelled")
                 break
             case C.ENOMEM:
-                cio.gctl_data = C.realloc(cio.gctl_data, C.size_t(cio.gctl_length))
-                if C.is_null(cio.gctl_data) == 1 {
-                    panic("out of memory realloc")
+                if cio.gctl_length > bsize {
+                    // Try to get a large enough buffer
+                    // no need to shrink it
+                    // we get the actual data size in gctl_length
+                    fmt.Println("Realloc ENOMEM", cio.gctl_length, bsize)
+                    cio.gctl_data = C.CBytes(make([]byte, cio.gctl_length))
+                    bsize = cio.gctl_length
                 }
                 goto L1
             default:
@@ -124,19 +130,25 @@ L1:
                 if cio.gctl_length > bsize {
                     bsize = cio.gctl_length
                     fmt.Println("Realloc ", bsize)
-                    cio.gctl_data = C.realloc(cio.gctl_data, C.size_t(cio.gctl_length))
-                    if C.is_null(cio.gctl_data) == 1 {
-                        panic("out of memory realloc")
-                    }
+                    fmt.Println("Realloc READ ", cio.gctl_length, bsize)
+                    cio.gctl_data = C.CBytes(make([]byte, cio.gctl_length))
+                    bsize = cio.gctl_length
+                    //this should not happen
                 }
-                
-                arg = Args{Blob: C.GoBytes(cio.gctl_data, C.int(cio.gctl_length)), Offset: int64(cio.gctl_offset),}
+
+                arg = Args{
+                            Blob: C.GoBytes(cio.gctl_data,
+                            C.int(cio.gctl_length)),
+                            Offset: int64(cio.gctl_offset),
+                      }
+
                 rch := make(chan *Args)
                 for _, disk := range disks {
                     go func (disk *Disk) {
                         iarg := <-rch
                         oarg := new(Args)
-                        if ioerr := disk.Client.Call("NadServer.Get", iarg, oarg); ioerr != nil {
+                        if ioerr := disk.Client.Call("NadServer.Get", 
+                                iarg, oarg); ioerr != nil {
                             fmt.Println("Error reading from", disk.Host, ioerr)
                         } else {
                             rch <- oarg
@@ -156,14 +168,19 @@ L1:
             case C.BIO_DELETE:
                 break
             case C.BIO_WRITE:
-                arg = Args{Blob: C.GoBytes(cio.gctl_data, C.int(cio.gctl_length)), Offset: int64(cio.gctl_offset),}
+                arg = Args{
+                        Blob: C.GoBytes(cio.gctl_data, C.int(cio.gctl_length)), 
+                        Offset: int64(cio.gctl_offset),
+                      }
+
                 wch := make(chan *Args)
                 wrcv := make(chan int, len(disks))
                 for _, disk := range disks {
                     go func (disk *Disk) {
                         var reply int = 0
                         iarg := <-wch
-                        if ioerr := disk.Client.Call("NadServer.Put", iarg, &reply); ioerr != nil {
+                        if ioerr := disk.Client.Call("NadServer.Put", 
+                                iarg, &reply); ioerr != nil {
                             fmt.Println("Error writing to", disk.Host, ioerr)
                         } else {
                             wrcv <-reply 
@@ -182,7 +199,8 @@ L1:
                                 break
                             }
                         case <- time.After(time.Second * 1):
-                            fmt.Println("Write timeout for", len(disks)-writtenTo, "disks.")
+                            fmt.Println("Write timeout for", 
+                                    len(disks)-writtenTo, "disks.")
                             if writtenTo == 0 {
                                 cio.gctl_error = C.EIO
                             }
@@ -195,31 +213,25 @@ L1:
         }
 
         cio.gctl_error = err
-        _, _, errno = syscall.Syscall(syscall.SYS_IOCTL, uintptr(gctl.Fd()),C.G_GATE_CMD_DONE, uintptr(unsafe.Pointer(&cio))) 
+        _, _, errno = syscall.Syscall(syscall.SYS_IOCTL, 
+                                      uintptr(gctl.Fd()),C.G_GATE_CMD_DONE, 
+                                      uintptr(unsafe.Pointer(&cio))) 
 
         if errno != 0 {
             panic("ioctl syscall failed G_GATE_CMD_DONE")
         }
     }
 
-    C.free(cio.gctl_data)
     fmt.Println("serve routine done")
 }
 
-/*
- struct g_gate_ctl_io {                                                          
-     u_int        gctl_version;                                                  
-     int      gctl_unit;                                                         
-     uintptr_t    gctl_seq;                                                      
-     u_int        gctl_cmd;                                                      
-     off_t        gctl_offset;                                                   
-     off_t        gctl_length;                                                   
-     void        *gctl_data;                                                     
-     int      gctl_error;                                                        
- };
-*/
 func main() {
     flag.Parse()
+
+    if *command_flag == "attach" && (*host_flag == "" || *unit_flag == -1) {
+        fmt.Println("attach requires -h and -u")
+        return
+    }
 
     if *command_flag == "create" && (*host_flag == "" || *unit_flag == -1) {
         fmt.Println("create requires -h and -u")
@@ -241,6 +253,24 @@ func main() {
         return
     }
 
+    if *command_flag == "cancel" && *unit_flag != -1 {
+        gctl, err := os.OpenFile("/dev/ggctl", os.O_RDWR, 0644)
+        if err != nil {
+            fmt.Println(err)
+            return
+        }
+        defer gctl.Close()
+        cs := C.struct_g_gate_ctl_cancel{
+            gctl_version: C.G_GATE_VERSION, 
+            gctl_unit: C.int(*unit_flag),
+        }
+        _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, 
+                                       uintptr(gctl.Fd()),C.G_GATE_CMD_CANCEL, 
+                                       uintptr(unsafe.Pointer(&cs))) 
+        fmt.Println("cancel", errno)
+        return
+    }
+
     var mediasize int64 = 0
     if *host_flag != "" {
         hosts := strings.Split(*host_flag, ",")
@@ -253,7 +283,8 @@ func main() {
             } else {
                 var info = Info{}
                 var oinfo = new(Info)
-                if err = client.Call("NadServer.Info", &info, oinfo); err != nil {
+                if err = client.Call("NadServer.Info", 
+                        &info, oinfo); err != nil {
                     fmt.Println("An error occured", err)
                     client.Close()
                     return
@@ -268,7 +299,12 @@ func main() {
 
                     }
 
-                    disks = append(disks, Disk{Mediasize: mediasize, Blocksize: *block_flag, Host: host, Client: client})
+                    disks = append(disks, Disk{
+                                                Mediasize: mediasize, 
+                                                Blocksize: *block_flag, 
+                                                Host: host, 
+                                                Client: client,
+                                              })
                 }
             }
         }
@@ -283,25 +319,39 @@ func main() {
     defer gctl.Close()
 
     switch *command_flag {
+        case "attach":
+            if mediasize == 0 || *block_flag == 0 || 
+                (mediasize % *block_flag) != 0 {
+                fmt.Println("media size and block size have to be greater than 0")
+                fmt.Println("media size has to be a multiple of block size")
+                return
+            }
+
+            waitgroup.Add(1)
+            go serve(*unit_flag)
         case "create":
-            if mediasize == 0 || *block_flag == 0 || (mediasize % *block_flag) != 0 {
+            if mediasize == 0 || *block_flag == 0 || 
+                (mediasize % *block_flag) != 0 {
                 fmt.Println("media size and block size have to be greater than 0")
                 fmt.Println("media size has to be a multiple of block size")
                 return
             }
 
             cs := C.struct_g_gate_ctl_create{
-                gctl_version: C.G_GATE_VERSION, 
-                gctl_mediasize: C.off_t(mediasize), 
-                gctl_sectorsize: C.u_int(*block_flag), 
+                gctl_version: C.G_GATE_VERSION,
+                gctl_mediasize: C.off_t(mediasize),
+                gctl_sectorsize: C.u_int(*block_flag),
                 gctl_flags: 0,
-                gctl_maxcount: 256, 
-                gctl_timeout: 1, 
+                gctl_maxcount: 256,
+                gctl_timeout: 1,
                 gctl_unit: C.int(*unit_flag),
             }
 
             C.strcpy(&cs.gctl_info[0], C.CString(*host_flag))
-            _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(gctl.Fd()),C.G_GATE_CMD_CREATE, uintptr(unsafe.Pointer(&cs))) 
+            _, _, errno := syscall.Syscall(syscall.SYS_IOCTL,
+                                           uintptr(gctl.Fd()),
+                                           C.G_GATE_CMD_CREATE,
+                                           uintptr(unsafe.Pointer(&cs)))
             if errno != 0 {
                 fmt.Println("create failed", errno)
             }
@@ -309,11 +359,14 @@ func main() {
             go serve(*unit_flag)
         case "destroy":
             cs := C.struct_g_gate_ctl_destroy{
-                gctl_version: C.G_GATE_VERSION, 
+                gctl_version: C.G_GATE_VERSION,
                 gctl_force: 0,
                 gctl_unit: C.int(*unit_flag),
             }
-            _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(gctl.Fd()),C.G_GATE_CMD_DESTROY, uintptr(unsafe.Pointer(&cs))) 
+            _, _, errno := syscall.Syscall(syscall.SYS_IOCTL,
+                                           uintptr(gctl.Fd()),
+                                           C.G_GATE_CMD_DESTROY,
+                                           uintptr(unsafe.Pointer(&cs)))
             if errno != 0 {
                 fmt.Println("destroy failed", errno)
             }
