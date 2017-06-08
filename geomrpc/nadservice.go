@@ -85,7 +85,11 @@ func serve(unit int) {
     }
 
     var bsize C.off_t = cio.gctl_length
-    cio.gctl_data = C.CBytes(make([]byte, cio.gctl_length))
+    cio.gctl_data = C.malloc(C.size_t(*block_flag))
+    if C.is_null(cio.gctl_data) == 1 {
+        panic(fmt.Sprintf("Out of memory for buffer size %d", 
+                    C.int(cio.gctl_length)))
+    }
 
     var err C.int = 0
     var arg Args
@@ -115,7 +119,12 @@ L1:
                     // no need to shrink it
                     // we get the actual data size in gctl_length
                     fmt.Println("Realloc ENOMEM", cio.gctl_length, bsize)
-                    cio.gctl_data = C.CBytes(make([]byte, cio.gctl_length))
+                    cio.gctl_data = C.realloc(cio.gctl_data, 
+                            C.size_t(cio.gctl_length))
+                    if C.is_null(cio.gctl_data) == 1 {
+                        panic(fmt.Sprintf("Out of memory for buffer size %d", 
+                                    C.int(cio.gctl_length)))
+                    }
                     bsize = cio.gctl_length
                 }
                 goto L1
@@ -128,17 +137,22 @@ L1:
         switch cio.gctl_cmd {
             case C.BIO_READ:
                 if cio.gctl_length > bsize {
-                    bsize = cio.gctl_length
                     fmt.Println("Realloc ", bsize)
                     fmt.Println("Realloc READ ", cio.gctl_length, bsize)
-                    cio.gctl_data = C.CBytes(make([]byte, cio.gctl_length))
+                    cio.gctl_data = C.realloc(cio.gctl_data, 
+                            C.size_t(cio.gctl_length))
+                    if C.is_null(cio.gctl_data) == 1 {
+                        panic(fmt.Sprintf("Out of memory for buffer size %d", 
+                                    C.int(cio.gctl_length)))
+                    }
                     bsize = cio.gctl_length
                     //this should not happen
                 }
 
                 arg = Args{
-                            Blob: C.GoBytes(cio.gctl_data,
-                            C.int(cio.gctl_length)),
+                            //Blob: C.GoBytes(unsafe.Pointer(cio.gctl_data),
+                            //C.int(cio.gctl_length)),
+                            Blob: make([]byte, int64(cio.gctl_length)),
                             Offset: int64(cio.gctl_offset),
                       }
 
@@ -159,7 +173,15 @@ L1:
 
                 select {
                     case oarg := <- rch:
+                        C.free(cio.gctl_data)
+                        bsize = C.off_t(len(oarg.Blob))
+                        cio.gctl_length = bsize
+                        //C.CBytes allocates memory using C.malloc
                         cio.gctl_data = C.CBytes(oarg.Blob)
+                        if C.is_null(cio.gctl_data) == 1 {
+                            panic(fmt.Sprintf("Out of memory for buffer size %d", 
+                                        C.int(cio.gctl_length)))
+                        }
                     case <- time.After(time.Second * 1):
                         fmt.Println("Read timeout for all disks")
                         cio.gctl_error = C.EIO
@@ -169,7 +191,7 @@ L1:
                 break
             case C.BIO_WRITE:
                 arg = Args{
-                        Blob: C.GoBytes(cio.gctl_data, C.int(cio.gctl_length)), 
+                        Blob: C.GoBytes(unsafe.Pointer(cio.gctl_data), C.int(cio.gctl_length)), 
                         Offset: int64(cio.gctl_offset),
                       }
 
@@ -222,6 +244,7 @@ L1:
         }
     }
 
+    C.free(cio.gctl_data)
     fmt.Println("serve routine done")
 }
 
