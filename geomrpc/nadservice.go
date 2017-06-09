@@ -114,11 +114,9 @@ L1:
                 fmt.Println("io cancelled")
                 break
             case C.ENOMEM:
+                //This happens on writes, would be nice to have a read and write buffer
                 if cio.gctl_length > bsize {
-                    // Try to get a large enough buffer
-                    // no need to shrink it
-                    // we get the actual data size in gctl_length
-                    fmt.Println("Realloc ENOMEM", cio.gctl_length, bsize)
+                    fmt.Println("Realloc ENOMEM", cio.gctl_length, bsize, C.int(cio.gctl_cmd))
                     cio.gctl_data = C.realloc(cio.gctl_data, 
                             C.size_t(cio.gctl_length))
                     if C.is_null(cio.gctl_data) == 1 {
@@ -137,21 +135,10 @@ L1:
         switch cio.gctl_cmd {
             case C.BIO_READ:
                 if cio.gctl_length > bsize {
-                    fmt.Println("Realloc ", bsize)
-                    fmt.Println("Realloc READ ", cio.gctl_length, bsize)
-                    cio.gctl_data = C.realloc(cio.gctl_data, 
-                            C.size_t(cio.gctl_length))
-                    if C.is_null(cio.gctl_data) == 1 {
-                        panic(fmt.Sprintf("Out of memory for buffer size %d", 
-                                    C.int(cio.gctl_length)))
-                    }
                     bsize = cio.gctl_length
-                    //this should not happen
                 }
 
                 arg = Args{
-                            //Blob: C.GoBytes(unsafe.Pointer(cio.gctl_data),
-                            //C.int(cio.gctl_length)),
                             Blob: make([]byte, int64(cio.gctl_length)),
                             Offset: int64(cio.gctl_offset),
                       }
