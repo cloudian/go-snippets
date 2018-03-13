@@ -18,25 +18,7 @@ var ready bool = false
 func Runner(cmd string) {
 	defer wg.Done()
 	com := strings.Split(cmd, " ")
-	c := &exec.Cmd{}
-	if !strings.HasPrefix(com[0], "/") {
-		p, err := exec.LookPath(com[0])
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Unable to find %s\n", com[0])
-			return
-		}
-
-		c.Path = p
-	} else {
-		c.Path = com[0]
-	}
-
-	c.Args = com
-	//Does not work like this
-	//c := exec.Command(com[0], strings.Join(com[1:], " "))
-	//Worked and looked the same as above
-	//c := exec.Command("nc", "127.0.0.1" , "8080")
-	//fmt.Fprintf(os.Stdout, "%v\n", c)
+	c := exec.Command(com[0], com[1:]...)
 	c.Stdout = os.Stdout
 
 	mu.Lock()
