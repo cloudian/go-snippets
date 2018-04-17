@@ -17,7 +17,8 @@ var ready bool = false
 func Runner(cmd string, arg string) {
 	defer wg.Done()
 	com := strings.Split(cmd, " ")
-    com[len(arg)-1] = fmt.Sprintf("%s%s", com[len(com)-1], arg)
+    last_arg := fmt.Sprintf("%s%s", com[len(com)-1], arg)
+    com[len(com)-1] = last_arg
 	c := exec.Command(com[0], com[1:]...)
 	c.Stdout = os.Stdout
 
@@ -26,7 +27,7 @@ func Runner(cmd string, arg string) {
 		cv.Wait()
 	}
 
-	fmt.Println("Runner woke up", cmd, time.Now().UnixNano())
+	fmt.Println("Runner woke up", strings.Join(com[:], " "), time.Now().UnixNano())
 	mu.Unlock()
 	err := c.Run()
 	if err != nil {
