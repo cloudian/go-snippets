@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"github.com/aws/aws-sdk-go/aws"
@@ -10,6 +11,8 @@ import (
 	"io"
 	"math/rand"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -21,7 +24,7 @@ type ObjectInputStream struct {
 	CurrentTs time.Time
 }
 
-func NewObjectInputStream(size int64, chunkSize int64) (o *ObjectInputStream) {
+func NewObjectInputStream(size int64) (o *ObjectInputStream) {
 	return &ObjectInputStream{
 		Size:      size,
 		Pos:       0,
@@ -58,7 +61,7 @@ func (cin *ObjectInputStream) Read(b []byte) (n int, err error) {
 }
 
 func (cin *ObjectInputStream) Seek(offset int64, whence int) (int64, error) {
-    //fmt.Println("seek", offset, whence)
+	//fmt.Println("seek", offset, whence)
 	switch whence {
 	case io.SeekStart:
 		if offset > cin.Size || (cin.Size+offset) < 0 {
@@ -86,40 +89,90 @@ func (cin *ObjectInputStream) Seek(offset int64, whence int) (int64, error) {
 	return 0, nil
 }
 
-var bucketname = flag.String("b", "cloudian-auto-spots", "The bucket to store your object")
-var objname = flag.String("o", "test/objtest", "The object name (key)")
-var objsize = flag.Int64("s", 10485760, "Object size (default 10MB)")
-var chunksize = flag.Int64("c", 5*1024*1024, "The size of parts in bytes used min 5MB")
-var region = flag.String("r", "us-east-2", "Region name to be used")
-var endpoint = flag.String("e", "", "Overwrite the endpoint")
-var profile = flag.String("p", "default", "The profile name")
-var pathstyle = flag.Bool("P", false, "Enforce path style urls")
+var bucketname = flag.String("bucket", "cloudian-auto-spots", "The bucket to store your object")
+var objname = flag.String("objkey", "test/objtest", "The object name (key)")
+var objsize = flag.String("size", "10M", "Object size (default 10MB)")
+var partsize = flag.String("partsize", "5M", "The size of parts in bytes used min 5MB")
+var region = flag.String("region", "us-east-2", "Region name to be used")
+var endpoint = flag.String("endpoint", "", "Overwrite the endpoint")
+var profile = flag.String("profile", "default", "The profile name")
+var pathstyle = flag.Bool("pathstyle", false, "Enforce path style urls")
 var nossl = flag.Bool("nossl", false, "Don't use SSL")
 var nomd5 = flag.Bool("nomd5", false, "Disable adding ContentMD5 to S3 object put and uploads")
 var nosum = flag.Bool("nosum", false, "Disable creating checksums")
 var retries = flag.Int("retries", -1, "Set the number of retries default -1 (forever)")
-var maxparts = flag.Int("maxparts", 0, "Will devide the object size by this number to calculate the part size")
+var maxparts = flag.Int("maxparts", 0, "Number of parts to upload")
 var maxthreads = flag.Int("maxthreads", 0, "number of threads to use per object default 0 (sdk default)")
 var delparts = flag.Bool("delparts", true, "Delete parts on errors")
 var help = flag.Bool("h", false, "Print a helpful message.")
 
 func usage() {
+	fmt.Println()
 	fmt.Println("Use", os.Args[0])
-	fmt.Println("\t-b <bucket_name> default 'cloudian-auto-spots'")
-	fmt.Println("\t-o <objectname> default 'objtest'")
-	fmt.Println("\t-s <size> object size default 10MB")
-	fmt.Println("\t-c <chunk_size> The size of parts used in bytes min 5MB")
-	fmt.Println("\t-r <region_name> The region name that should be used")
-	fmt.Println("\t-e <endpoint> Set the endpoint to be used default is 'default'")
-	fmt.Println("\t-p <profile> Set the profile name default is 'default'")
-	fmt.Println("\t-P If set it enforces path style urls")
-	fmt.Println("\t-nossl Don't use SSL")
-	fmt.Println("\t-nomd5 Disable adding ContentMD5 to S3 object put and upload")
-	fmt.Println("\t-nosum Disable creating checksums")
-	fmt.Println("\t-retries Set the number of retries default -1 forever")
-	fmt.Println("\t-maxparts <count> Will devide the object size by this number to calculate the part size")
+	fmt.Println("\t-bucket     <bucket_name> default 'cloudian-auto-spots'")
+	fmt.Println("\t            will create the bucket if not exist")
+	fmt.Println("\t-objkey     <objectname> default 'test/objtest'")
+	fmt.Println("\t-size       <size> object size default 10MB")
+	fmt.Println("\t            B = bytes, K = kilo bytes M = mega bytes")
+	fmt.Println("\t            G = giga bytes, T = terra bytes, example 10K")
+	fmt.Println("\t-partsize   <chunk_size> The size of parts used in bytes min 5MB")
+	fmt.Println("\t            B = bytes, K = kilo bytes M = mega bytes")
+	fmt.Println("\t            G = giga bytes, T = terra bytes, example 10K")
+	fmt.Println("\t-region     <region_name> The region name that should be used default us-east-2")
+	fmt.Println("\t-endpoint   <endpoint> Set the endpoint to be used default is 'default'")
+	fmt.Println("\t            use -nossl if the endpoint is not https")
+	fmt.Println("\t-profile    <profile> Set the profile name default is 'default'")
+	fmt.Println("\t-pathstyle  If set it enforces path style urls")
+	fmt.Println("\t-nossl      Don't use SSL")
+	fmt.Println("\t-nomd5      Disable adding ContentMD5 to S3 object put and upload")
+	fmt.Println("\t-nosum      Disable creating checksums")
+	fmt.Println("\t-retries    Set the number of retries default -1 forever")
+	fmt.Println("\t-maxparts   <count> Will devide the object size by this number to calculate the part size")
+	fmt.Println("\t            will ignore partsize if set")
 	fmt.Println("\t-maxthreads <count> number of threads to use per object default 0 (sdk default)")
-	fmt.Println("\t-delparts Delete parts on error, default true")
+	fmt.Println("\t-delparts   Delete parts on error, default true")
+	fmt.Println()
+}
+
+func unitsToBytes(u string) (r int64, err error) {
+	if strings.HasSuffix(strings.ToUpper(u), "B") {
+		result, err := strconv.ParseInt(strings.TrimSuffix(u, "B"), 10, 64)
+		if err == nil {
+			return result, nil
+		} else {
+			return 0, errors.New("Failed to parse number")
+		}
+	} else if strings.HasSuffix(strings.ToUpper(u), "K") {
+		result, err := strconv.ParseInt(strings.TrimSuffix(u, "K"), 10, 64)
+		if err == nil {
+			return (result * (2 << 9)), nil
+		} else {
+			return 0, errors.New("Failed to parse number")
+		}
+	} else if strings.HasSuffix(strings.ToUpper(u), "M") {
+		result, err := strconv.ParseInt(strings.TrimSuffix(u, "M"), 10, 64)
+		if err == nil {
+			return (result * (2 << 19)), nil
+		} else {
+			return 0, errors.New("Failed to parse number")
+		}
+	} else if strings.HasSuffix(strings.ToUpper(u), "G") {
+		result, err := strconv.ParseInt(strings.TrimSuffix(u, "G"), 10, 64)
+		if err == nil {
+			return (result * (2 << 29)), nil
+		} else {
+			return 0, errors.New("Failed to parse number")
+		}
+	} else if strings.HasSuffix(strings.ToUpper(u), "T") {
+		result, err := strconv.ParseInt(strings.TrimSuffix(u, "T"), 10, 64)
+		if err == nil {
+			return (result * (2 << 39)), nil
+		} else {
+			return 0, errors.New("Failed to parse number")
+		}
+	}
+
+	return 0, errors.New("Unknown suffix")
 }
 
 func main() {
@@ -127,6 +180,25 @@ func main() {
 	if *help {
 		usage()
 		return
+	}
+
+	osize, err := unitsToBytes(*objsize)
+	if err != nil {
+		exitErrorf("Error parameter -size %v", err)
+	}
+
+	psize, err := unitsToBytes(*partsize)
+	if err != nil {
+		exitErrorf("Error parameter -partsize %v", err)
+	}
+
+	if *maxparts > 0 {
+        fmt.Println(*maxparts)
+		rest := (osize % int64(*maxparts))
+        fmt.Println(osize)
+        fmt.Println(rest)
+		psize = (osize - rest) / int64(*maxparts)
+        fmt.Println(psize)
 	}
 
 	config := aws.NewConfig().
@@ -139,25 +211,24 @@ func main() {
 		WithS3DisableContentMD5Validation(*nomd5).
 		WithS3ForcePathStyle(*pathstyle)
 	t := time.Now()
-	o := NewObjectInputStream(*objsize, *chunksize)
+	o := NewObjectInputStream(osize)
 	bucket := *bucketname
 	filename := *objname
 
 	sess, err := session.NewSession(config)
 	if err != nil {
-		// Print the error and exit.
-		exitErrorf("Unable to upload %q to %q, %v", filename, bucket, err)
+		exitErrorf("Unable to create session %v", err)
 	}
 	// http://docs.aws.amazon.com/sdk-for-go/api/service/s3/s3manager/#NewUploader
 	uploader := s3manager.NewUploader(sess, func(u *s3manager.Uploader) {
 		u.Concurrency = *maxthreads
 		u.LeavePartsOnError = *delparts
-		if *chunksize > (5 * 1024 * 1024) {
-			u.PartSize = *chunksize
-		}
-
-		if *maxparts > 0 && o.Size > u.PartSize {
+		if *maxparts > 0 {
 			u.MaxUploadParts = *maxparts
+			u.PartSize = psize
+			fmt.Println("Using part size", u.PartSize)
+		} else {
+			u.PartSize = psize
 		}
 	})
 
@@ -173,22 +244,17 @@ func main() {
 		// each part.
 		Body: o,
 	})
+
 	if err != nil {
-		// Print the error and exit.
 		exitErrorf("Unable to upload %q to %q, %v", filename, bucket, err)
 	}
 
 	ptime := (o.CurrentTs.Sub(o.StartTs).Seconds())
 	utime := (time.Now().Sub(o.StartTs).Seconds())
-	rate := ((float64(o.Pos) / (1024 * 1024)) / utime)
+	rate := ((float64(o.Pos) / (2 << 20)) / utime)
 	latency := o.StartTs.Sub(t).Seconds() * 1000
 	fmt.Println("#bucketname,objectname,objectsize in bytes,latency in ms,ptime in s,uploadtime in s,transferrate MB/s")
 	fmt.Printf("%s,%s,%v,%v,%v,%v,%v\n", bucket, filename, *objsize, latency, ptime, utime, rate)
-	//fmt.Printf("Successfully uploaded %q (%v Bytes) to %q\n", filename, *objsize, bucket)
-	//fmt.Println("Latency ", o.StartTs.Sub(t).Seconds()*1000, "ms")
-	//fmt.Println("Transfer to aws sdk took ", (o.CurrentTs.Sub(o.StartTs).Seconds()), " s")
-	//fmt.Println("Upload took ", (time.Now().Sub(o.CurrentTs).Seconds()), "s")
-	//fmt.Println("Transfer rate ", ((float64(o.Pos) / (1024 * 1024)) / (time.Now().Sub(o.CurrentTs).Seconds())), " mega bytes/s")
 }
 
 func exitErrorf(msg string, args ...interface{}) {
