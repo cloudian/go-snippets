@@ -30,6 +30,7 @@ func NewObjectInputStream(size int64, chunkSize int64) (o *ObjectInputStream) {
 }
 
 func (cin *ObjectInputStream) Read(b []byte) (n int, err error) {
+	//fmt.Println("Read pos", cin.Pos)
 	if cin.Pos >= cin.Size {
 		return 0, io.EOF
 	}
@@ -57,6 +58,7 @@ func (cin *ObjectInputStream) Read(b []byte) (n int, err error) {
 }
 
 func (cin *ObjectInputStream) Seek(offset int64, whence int) (int64, error) {
+    //fmt.Println("seek", offset, whence)
 	switch whence {
 	case io.SeekStart:
 		if offset > cin.Size || (cin.Size+offset) < 0 {
@@ -142,7 +144,10 @@ func main() {
 	filename := *objname
 
 	sess, err := session.NewSession(config)
-
+	if err != nil {
+		// Print the error and exit.
+		exitErrorf("Unable to upload %q to %q, %v", filename, bucket, err)
+	}
 	// http://docs.aws.amazon.com/sdk-for-go/api/service/s3/s3manager/#NewUploader
 	uploader := s3manager.NewUploader(sess, func(u *s3manager.Uploader) {
 		u.Concurrency = *maxthreads
