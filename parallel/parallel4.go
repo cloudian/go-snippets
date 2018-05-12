@@ -20,6 +20,7 @@ func Runner(cmd string) {
 	com := strings.Split(cmd, " ")
 	c := exec.Command(com[0], com[1:]...)
 	c.Stdout = os.Stdout
+    c.Stderr = os.Stderr
 
 	mu.Lock()
 	for ready != true {

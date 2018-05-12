@@ -147,6 +147,10 @@ func main() {
 	uploader := s3manager.NewUploader(sess, func(u *s3manager.Uploader) {
 		u.Concurrency = *maxthreads
 		u.LeavePartsOnError = *delparts
+		if *chunksize > (5 * 1024 * 1024) {
+			u.PartSize = *chunksize
+		}
+
 		if *maxparts > 0 && o.Size > u.PartSize {
 			u.MaxUploadParts = *maxparts
 		}
@@ -170,8 +174,8 @@ func main() {
 	}
 
 	ptime := (o.CurrentTs.Sub(o.StartTs).Seconds())
-	utime := (time.Now().Sub(o.CurrentTs).Seconds())
-	rate := (o.CurrentTs.Sub(o.StartTs).Seconds())
+	utime := (time.Now().Sub(o.StartTs).Seconds())
+	rate := ((float64(o.Pos) / (1024 * 1024)) / utime)
 	latency := o.StartTs.Sub(t).Seconds() * 1000
 	fmt.Println("#bucketname,objectname,objectsize in bytes,latency in ms,ptime in s,uploadtime in s,transferrate MB/s")
 	fmt.Printf("%s,%s,%v,%v,%v,%v,%v\n", bucket, filename, *objsize, latency, ptime, utime, rate)
