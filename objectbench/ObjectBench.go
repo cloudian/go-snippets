@@ -9,12 +9,12 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 	"io"
+	"math"
 	"math/rand"
 	"os"
 	"strconv"
 	"strings"
 	"time"
-    "math"
 )
 
 type ObjectInputStream struct {
@@ -194,9 +194,9 @@ func main() {
 	}
 
 	if *maxparts > 0 {
-        fmt.Println(*maxparts)
-        psize = int64(math.Ceil(float64(osize)/float64(*maxparts)))
-        fmt.Println(psize)
+		fmt.Println(*maxparts)
+		psize = int64(math.Ceil(float64(osize) / float64(*maxparts)))
+		fmt.Println(psize)
 	}
 
 	config := aws.NewConfig().
