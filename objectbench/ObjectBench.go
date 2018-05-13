@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+    "math"
 )
 
 type ObjectInputStream struct {
@@ -194,10 +195,7 @@ func main() {
 
 	if *maxparts > 0 {
         fmt.Println(*maxparts)
-		rest := (osize % int64(*maxparts))
-        fmt.Println(osize)
-        fmt.Println(rest)
-		psize = (osize - rest) / int64(*maxparts)
+        psize = int64(math.Ceil(float64(osize)/float64(*maxparts)))
         fmt.Println(psize)
 	}
 
