@@ -34,7 +34,6 @@ func NewObjectInputStream(size int64) (o *ObjectInputStream) {
 }
 
 func (cin *ObjectInputStream) Read(b []byte) (n int, err error) {
-	//fmt.Println("Read pos", cin.Pos)
 	if cin.Pos >= cin.Size {
 		return 0, io.EOF
 	}
@@ -62,7 +61,6 @@ func (cin *ObjectInputStream) Read(b []byte) (n int, err error) {
 }
 
 func (cin *ObjectInputStream) Seek(offset int64, whence int) (int64, error) {
-	//fmt.Println("seek", offset, whence)
 	switch whence {
 	case io.SeekStart:
 		if offset > cin.Size || (cin.Size+offset) < 0 {
@@ -135,6 +133,30 @@ func usage() {
 	fmt.Println()
 }
 
+func bytesToUnits(b int64) string {
+	if b >= (2 << 39) {
+		d := float64(b) / float64(2<<39)
+		return fmt.Sprintf("%.2fTB", d)
+	}
+
+	if b >= (2 << 29) {
+		d := float64(b) / float64(2<<29)
+		return fmt.Sprintf("%.2fGB", d)
+	}
+
+	if b >= (2 << 19) {
+		d := float64(b) / float64(2<<19)
+		return fmt.Sprintf("%.2fMB", d)
+	}
+
+	if b >= (2 << 9) {
+		d := float64(b) / float64(2<<9)
+		return fmt.Sprintf("%.2fKB", d)
+	}
+
+	return "err"
+}
+
 func unitsToBytes(u string) (r int64, err error) {
 	if strings.HasSuffix(strings.ToUpper(u), "B") {
 		result, err := strconv.ParseInt(strings.TrimSuffix(u, "B"), 10, 64)
@@ -194,9 +216,7 @@ func main() {
 	}
 
 	if *maxparts > 0 {
-		fmt.Println(*maxparts)
 		psize = int64(math.Ceil(float64(osize) / float64(*maxparts)))
-		fmt.Println(psize)
 	}
 
 	config := aws.NewConfig().
@@ -224,7 +244,7 @@ func main() {
 		if *maxparts > 0 {
 			u.MaxUploadParts = *maxparts
 			u.PartSize = psize
-			fmt.Println("Using part size", u.PartSize)
+			fmt.Println("Using part size", bytesToUnits(u.PartSize))
 		} else {
 			u.PartSize = psize
 		}
@@ -249,10 +269,11 @@ func main() {
 
 	ptime := (o.CurrentTs.Sub(o.StartTs).Seconds())
 	utime := (time.Now().Sub(o.StartTs).Seconds())
-	rate := ((float64(o.Pos) / (2 << 20)) / utime)
+	rate := int64((float64(o.Pos)) / utime)
 	latency := o.StartTs.Sub(t).Seconds() * 1000
 	fmt.Println("#bucketname,objectname,objectsize in bytes,latency in ms,ptime in s,uploadtime in s,transferrate MB/s")
-	fmt.Printf("%s,%s,%v,%v,%v,%v,%v\n", bucket, filename, *objsize, latency, ptime, utime, rate)
+	fmt.Printf("%s,%s,%v,%v,%v,%v,%s\n",
+		bucket, filename, *objsize, latency, ptime, utime, fmt.Sprintf("%s/s", bytesToUnits(rate)))
 }
 
 func exitErrorf(msg string, args ...interface{}) {
