@@ -1,21 +1,39 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/credentials"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/s3/s3manager"
+	//"github.com/aws/aws-sdk-go/aws"
+	//"github.com/aws/aws-sdk-go/aws/credentials"
+	//"github.com/aws/aws-sdk-go/aws/session"
+	//"github.com/aws/aws-sdk-go/service/s3/s3manager"
 	"io"
-	"math"
+	"io/ioutil"
+	//"math"
 	"math/rand"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 )
+
+type Job struct {
+	Bucket      string `json:"bucket"`
+	Keyprefix   string `json:"keyprefix"`
+	Objectsize  string `json:"objectsize"`
+    osize       int64
+	Concurrency int `json:"concurrency"`
+	Partsize    string `json:"partsize"`
+    psize       int64
+	Maxparts    int `json:"maxparts"`
+	Delparts    bool `json:"delparts"`
+	Workers     int `json:"workers"`
+	Errorlog    string `json:"errorlog"`
+	Results     string `json:"results"`
+    Count       int     `json:"count"`
+}
 
 type ObjectInputStream struct {
 	Size      int64
@@ -88,10 +106,6 @@ func (cin *ObjectInputStream) Seek(offset int64, whence int) (int64, error) {
 	return 0, nil
 }
 
-var bucketname = flag.String("bucket", "cloudian-auto-spots", "The bucket to store your object")
-var objname = flag.String("objkey", "test/objtest", "The object name (key)")
-var objsize = flag.String("size", "10M", "Object size (default 10MB)")
-var partsize = flag.String("partsize", "5M", "The size of parts in bytes used min 5MB")
 var region = flag.String("region", "us-east-2", "Region name to be used")
 var endpoint = flag.String("endpoint", "", "Overwrite the endpoint")
 var profile = flag.String("profile", "default", "The profile name")
@@ -100,23 +114,13 @@ var nossl = flag.Bool("nossl", false, "Don't use SSL")
 var nomd5 = flag.Bool("nomd5", false, "Disable adding ContentMD5 to S3 object put and uploads")
 var nosum = flag.Bool("nosum", false, "Disable creating checksums")
 var retries = flag.Int("retries", -1, "Set the number of retries default -1 (forever)")
-var maxparts = flag.Int("maxparts", 0, "Number of parts to upload")
-var maxthreads = flag.Int("maxthreads", 0, "number of threads to use per object default 0 (sdk default)")
-var delparts = flag.Bool("delparts", true, "Delete parts on errors")
+var cfg = flag.String("config", "objectbench.json", "config file in json format default objectbench.json")
+var skeleton = flag.Bool("skeleton", false, "Print a configuration example to stdout")
 var help = flag.Bool("h", false, "Print a helpful message.")
 
 func usage() {
 	fmt.Println()
 	fmt.Println("Use", os.Args[0])
-	fmt.Println("\t-bucket     <bucket_name> default 'cloudian-auto-spots'")
-	fmt.Println("\t            will create the bucket if not exist")
-	fmt.Println("\t-objkey     <objectname> default 'test/objtest'")
-	fmt.Println("\t-size       <size> object size default 10MB")
-	fmt.Println("\t            B = bytes, K = kilo bytes M = mega bytes")
-	fmt.Println("\t            G = giga bytes, T = terra bytes, example 10K")
-	fmt.Println("\t-partsize   <chunk_size> The size of parts used in bytes min 5MB")
-	fmt.Println("\t            B = bytes, K = kilo bytes M = mega bytes")
-	fmt.Println("\t            G = giga bytes, T = terra bytes, example 10K")
 	fmt.Println("\t-region     <region_name> The region name that should be used default us-east-2")
 	fmt.Println("\t-endpoint   <endpoint> Set the endpoint to be used default is 'default'")
 	fmt.Println("\t            use -nossl if the endpoint is not https")
@@ -126,10 +130,8 @@ func usage() {
 	fmt.Println("\t-nomd5      Disable adding ContentMD5 to S3 object put and upload")
 	fmt.Println("\t-nosum      Disable creating checksums")
 	fmt.Println("\t-retries    Set the number of retries default -1 forever")
-	fmt.Println("\t-maxparts   <count> Will devide the object size by this number to calculate the part size")
-	fmt.Println("\t            will ignore partsize if set")
-	fmt.Println("\t-maxthreads <count> number of threads to use per object default 0 (sdk default)")
-	fmt.Println("\t-delparts   Delete parts on error, default true")
+	fmt.Println("\t-config     Path to config file")
+	fmt.Println("\t-skeleton   Print a configuration file example to stdout and exit")
 	fmt.Println()
 }
 
@@ -195,7 +197,7 @@ func unitsToBytes(u string) (r int64, err error) {
 		}
 	}
 
-	return 0, errors.New("Unknown suffix")
+	return 0, nil
 }
 
 func main() {
@@ -203,6 +205,53 @@ func main() {
 	if *help {
 		usage()
 		return
+	}
+
+	rawjson, err := ioutil.ReadFile(*cfg)
+	if err != nil {
+		exitErrorf("Error reading config %v", err)
+	}
+
+	var jobs []Job
+	err = json.Unmarshal(rawjson, &jobs)
+	if err != nil {
+		exitErrorf("Error parsing json %v", err)
+	}
+
+	for _, j := range jobs {
+        j.osize, err = unitsToBytes(j.Objectsize)
+        if err != nil {
+            exitErrorf("Error parsing json %v", err)
+        }
+
+        j.psize, err = unitsToBytes(j.Partsize)
+        if err != nil {
+            exitErrorf("Error parsing json %v", err)
+        }
+
+		fmt.Println("Job ", j.Bucket, j.Keyprefix, j.Objectsize,j.osize,j.psize)
+	}
+
+	return
+    /*
+	objsizes = make([]int64)
+	if strings.Contains(*objsize, ",") {
+		sa := strings.Split(*objsize, ",")
+		for _, v := range sa {
+			value, err := unitsToBytes(v)
+			if err != nil {
+				exitErrorf("Error parameter -size %v", err)
+				return
+			}
+			objsizes = append(objsizes, value)
+		}
+	} else {
+		value, err := unitsToBytes(*objsize)
+		if err != nil {
+			exitErrorf("Error parameter -size %v", err)
+			return
+		}
+		objsizes = append(objsizes, value)
 	}
 
 	osize, err := unitsToBytes(*objsize)
@@ -274,6 +323,7 @@ func main() {
 	fmt.Println("#bucketname,objectname,objectsize in bytes,latency in ms,ptime in s,uploadtime in s,transferrate MB/s")
 	fmt.Printf("%s,%s,%v,%v,%v,%v,%s\n",
 		bucket, filename, *objsize, latency, ptime, utime, fmt.Sprintf("%s/s", bytesToUnits(rate)))
+    */
 }
 
 func exitErrorf(msg string, args ...interface{}) {
