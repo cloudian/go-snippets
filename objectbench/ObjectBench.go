@@ -8,7 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
-	//"github.com/aws/aws-sdk-go/service/s3/s3manager"
+	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 	"io"
 	"io/ioutil"
 	"math"
@@ -16,24 +16,37 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
-    "sync"
 )
+
+type Result struct {
+	Err          string `json:"err"`
+	Bucket       string `json:"bucket"`
+	Object       string `json:"object"`
+	ObjectSize   string `json:"objectsize"`
+	Latency      string `json:"latency"`
+	ProcessTime  string `json:"processtime"`
+	UploadTime   string `json:"uploadtime"`
+	TransferRate string `json:"transferrate"`
+	StartTime    int64  `json:"starttime"`
+	EndTime      int64  `json:"endtime"`
+}
 
 type Job struct {
 	Bucket      string `json:"bucket"`
 	Keyprefix   string `json:"keyprefix"`
 	Objectsize  string `json:"objectsize"`
-    osize       int64
-	Concurrency int `json:"concurrency"`
+	osize       int64
+	Concurrency int    `json:"concurrency"`
 	Partsize    string `json:"partsize"`
-    psize       int64
-	Maxparts    int `json:"maxparts"`
-	Delparts    bool `json:"delparts"`
-	Workers     int `json:"workers"`
+	psize       int64
+	Maxparts    int    `json:"maxparts"`
+	Delparts    bool   `json:"delparts"`
+	Workers     int    `json:"workers"`
 	Errorlog    string `json:"errorlog"`
 	Results     string `json:"results"`
-    Count       int     `json:"count"`
+	Count       int    `json:"count"`
 }
 
 type ObjectInputStream struct {
@@ -201,77 +214,92 @@ func unitsToBytes(u string) (r int64, err error) {
 	return 0, nil
 }
 
-func startJob(session *session.Session , job *Job) {
-    defer gwg.Done()
-    var wg sync.WaitGroup
-    var cv *sync.Cond
-    var mu sync.Mutex
-    var ready bool = false
+func startJob(session *session.Session, job *Job) {
+	defer gwg.Done()
+	var wg sync.WaitGroup
+	var cv *sync.Cond
+	var mu sync.Mutex
+	var ready bool = false
+	rchan := make(chan Result)
 
-    for i := 0; i < job.Workers; i++ {
-        wg.Add(1)
-        go func() {
-            defer wg.Done()
-            mu.Lock()
-            for ready != true {
-                cv.Wait()
-            }
-            mu.Unlock()
+	go func() {
+		for {
+			result := <-rchan
+			//write result
+		}
+	}()
 
-            //Use an AtomixInt to count objects
-            //Create a Result that you hand over via a channel to write it
-            t := time.Now()
-            o := NewObjectInputStream(job.osize)
-            bucket := job.Bucket
-            filename := Sprintf("%s%d", job.Keyprefix, count)
-            // http://docs.aws.amazon.com/sdk-for-go/api/service/s3/s3manager/#NewUploader
-            uploader := s3manager.NewUploader(sess, func(u *s3manager.Uploader) {
-                u.Concurrency = job.Concurrency
-                u.LeavePartsOnError = job.Delparts
-                if job.Maxparts > 0 {
-                    u.MaxUploadParts = job.Maxparts
-                    u.PartSize = job.psize
-                } else {
-                    u.PartSize = job.psize
-                }
-            })
+	for i := 0; i < job.Workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			mu.Lock()
+			for ready != true {
+				cv.Wait()
+			}
+			mu.Unlock()
 
-            // Upload the file's body to S3 bucket as an object with the key being the
-            // same as the filename.
-            _, err = uploader.Upload(&s3manager.UploadInput{
-                Bucket: aws.String(bucket),
-                Key:    aws.String(filename),
+			//Use an AtomixInt to count objects
+			//Create a Result that you hand over via a channel to write it
+			t := time.Now()
+			o := NewObjectInputStream(job.osize)
+			bucket := job.Bucket
+			filename := fmt.Sprintf("%s%d", job.Keyprefix, count)
+			// http://docs.aws.amazon.com/sdk-for-go/api/service/s3/s3manager/#NewUploader
+			uploader := s3manager.NewUploader(session, func(u *s3manager.Uploader) {
+				u.Concurrency = job.Concurrency
+				u.LeavePartsOnError = job.Delparts
+				if job.Maxparts > 0 {
+					u.MaxUploadParts = job.Maxparts
+					u.PartSize = job.psize
+				} else {
+					u.PartSize = job.psize
+				}
+			})
 
-                // The file to be uploaded. io.ReadSeeker is preferred as the Uploader
-                // will be able to optimize memory when uploading large content. io.Reader
-                // is supported, but will require buffering of the reader's bytes for
-                // each part.
-                Body: o,
-            })
+			// Upload the file's body to S3 bucket as an object with the key being the
+			// same as the filename.
+			_, err := uploader.Upload(&s3manager.UploadInput{
+				Bucket: aws.String(bucket),
+				Key:    aws.String(filename),
 
-            if err != nil {
-                //count the error do not exit
-                exitErrorf("Unable to upload %q to %q, %v", filename, bucket, err)
-            }
+				// The file to be uploaded. io.ReadSeeker is preferred as the Uploader
+				// will be able to optimize memory when uploading large content. io.Reader
+				// is supported, but will require buffering of the reader's bytes for
+				// each part.
+				Body: o,
+			})
 
-            /* Should be part of the result somehow
-            ptime := (o.CurrentTs.Sub(o.StartTs).Seconds())
-            utime := (time.Now().Sub(o.StartTs).Seconds())
-            rate := int64((float64(o.Pos)) / utime)
-            latency := o.StartTs.Sub(t).Seconds() * 1000
-            fmt.Println("#bucketname,objectname,objectsize in bytes,latency in ms,ptime in s,uploadtime in s,transferrate MB/s")
-            fmt.Printf("%s,%s,%v,%v,%v,%v,%s\n",
-                bucket, filename, *objsize, latency, ptime, utime, fmt.Sprintf("%s/s", bytesToUnits(rate)))
-            */
-        }()
-    }
+			if err != nil {
+				rchan <- Result{Err: fmt.Sprintf("Unable to upload %q to %q, %v", filename, bucket, err)}
+			} else {
+				ptime := (o.CurrentTs.Sub(o.StartTs).Seconds())
+				utime := (time.Now().Sub(o.StartTs).Seconds())
+				rate := int64((float64(o.Pos)) / utime)
+				latency := o.StartTs.Sub(t).Seconds() * 1000
+				r := Result{
+					Err:          "",
+					Bucket:       job.Bucket,
+					Object:       filename,
+					ObjectSize:   bytesToUnits(o.Size),
+					Latency:      fmt.Sprintf("%vms", o.StartTs.Sub(t).Seconds()*1000),
+					ProcessTime:  fmt.Sprintf("%vs", ptime),
+					UploadTime:   fmt.Sprintf("%vs", utime),
+					TransferRate: fmt.Sprintf("%s/s", bytesToUnits(rate)),
+					StartTime:    t.UnixNano(),
+					EndTime:      time.Now().UnixNano(),
+				}
+				rchan <- r
+			}
+		}()
+	}
 
-    mu.Lock()
-    ready = true
-    mu.Unlock()
-    cv.Broadcast()
-    wg.Wait()
-    fmt.Printf("Start session: %v %v\n", session, job)
+	mu.Lock()
+	ready = true
+	mu.Unlock()
+	cv.Broadcast()
+	wg.Wait()
+	fmt.Printf("Start session: %v %v\n", session, job)
 }
 
 var gwg sync.WaitGroup
@@ -295,21 +323,21 @@ func main() {
 	}
 
 	for _, j := range jobs {
-        j.osize, err = unitsToBytes(j.Objectsize)
-        if err != nil {
-            exitErrorf("Error parsing json %v", err)
-        }
+		j.osize, err = unitsToBytes(j.Objectsize)
+		if err != nil {
+			exitErrorf("Error parsing json %v", err)
+		}
 
-        j.psize, err = unitsToBytes(j.Partsize)
-        if err != nil {
-            exitErrorf("Error parsing json %v", err)
-        }
+		j.psize, err = unitsToBytes(j.Partsize)
+		if err != nil {
+			exitErrorf("Error parsing json %v", err)
+		}
 
-        if j.Maxparts > 0 {
-            j.psize = int64(math.Ceil(float64(j.osize) / float64(j.Maxparts)))
-        }
+		if j.Maxparts > 0 {
+			j.psize = int64(math.Ceil(float64(j.osize) / float64(j.Maxparts)))
+		}
 
-		fmt.Println("Job ", j.Bucket, j.Keyprefix, j.Objectsize,j.osize,j.psize)
+		fmt.Println("Job ", j.Bucket, j.Keyprefix, j.Objectsize, j.osize, j.psize)
 	}
 
 	config := aws.NewConfig().
@@ -328,11 +356,11 @@ func main() {
 	}
 
 	for _, j := range jobs {
-        gwg.Add(1)
-        go startJob(sess, &j)
-    }
+		gwg.Add(1)
+		go startJob(sess, &j)
+	}
 
-    gwg.Wait()
+	gwg.Wait()
 }
 
 func exitErrorf(msg string, args ...interface{}) {
