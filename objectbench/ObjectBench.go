@@ -5,18 +5,19 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	//"github.com/aws/aws-sdk-go/aws"
-	//"github.com/aws/aws-sdk-go/aws/credentials"
-	//"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/credentials"
+	"github.com/aws/aws-sdk-go/aws/session"
 	//"github.com/aws/aws-sdk-go/service/s3/s3manager"
 	"io"
 	"io/ioutil"
-	//"math"
+	"math"
 	"math/rand"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+    "sync"
 )
 
 type Job struct {
@@ -200,6 +201,81 @@ func unitsToBytes(u string) (r int64, err error) {
 	return 0, nil
 }
 
+func startJob(session *session.Session , job *Job) {
+    defer gwg.Done()
+    var wg sync.WaitGroup
+    var cv *sync.Cond
+    var mu sync.Mutex
+    var ready bool = false
+
+    for i := 0; i < job.Workers; i++ {
+        wg.Add(1)
+        go func() {
+            defer wg.Done()
+            mu.Lock()
+            for ready != true {
+                cv.Wait()
+            }
+            mu.Unlock()
+
+            //Use an AtomixInt to count objects
+            //Create a Result that you hand over via a channel to write it
+            t := time.Now()
+            o := NewObjectInputStream(job.osize)
+            bucket := job.Bucket
+            filename := Sprintf("%s%d", job.Keyprefix, count)
+            // http://docs.aws.amazon.com/sdk-for-go/api/service/s3/s3manager/#NewUploader
+            uploader := s3manager.NewUploader(sess, func(u *s3manager.Uploader) {
+                u.Concurrency = job.Concurrency
+                u.LeavePartsOnError = job.Delparts
+                if job.Maxparts > 0 {
+                    u.MaxUploadParts = job.Maxparts
+                    u.PartSize = job.psize
+                } else {
+                    u.PartSize = job.psize
+                }
+            })
+
+            // Upload the file's body to S3 bucket as an object with the key being the
+            // same as the filename.
+            _, err = uploader.Upload(&s3manager.UploadInput{
+                Bucket: aws.String(bucket),
+                Key:    aws.String(filename),
+
+                // The file to be uploaded. io.ReadSeeker is preferred as the Uploader
+                // will be able to optimize memory when uploading large content. io.Reader
+                // is supported, but will require buffering of the reader's bytes for
+                // each part.
+                Body: o,
+            })
+
+            if err != nil {
+                //count the error do not exit
+                exitErrorf("Unable to upload %q to %q, %v", filename, bucket, err)
+            }
+
+            /* Should be part of the result somehow
+            ptime := (o.CurrentTs.Sub(o.StartTs).Seconds())
+            utime := (time.Now().Sub(o.StartTs).Seconds())
+            rate := int64((float64(o.Pos)) / utime)
+            latency := o.StartTs.Sub(t).Seconds() * 1000
+            fmt.Println("#bucketname,objectname,objectsize in bytes,latency in ms,ptime in s,uploadtime in s,transferrate MB/s")
+            fmt.Printf("%s,%s,%v,%v,%v,%v,%s\n",
+                bucket, filename, *objsize, latency, ptime, utime, fmt.Sprintf("%s/s", bytesToUnits(rate)))
+            */
+        }()
+    }
+
+    mu.Lock()
+    ready = true
+    mu.Unlock()
+    cv.Broadcast()
+    wg.Wait()
+    fmt.Printf("Start session: %v %v\n", session, job)
+}
+
+var gwg sync.WaitGroup
+
 func main() {
 	flag.Parse()
 	if *help {
@@ -229,43 +305,11 @@ func main() {
             exitErrorf("Error parsing json %v", err)
         }
 
+        if j.Maxparts > 0 {
+            j.psize = int64(math.Ceil(float64(j.osize) / float64(j.Maxparts)))
+        }
+
 		fmt.Println("Job ", j.Bucket, j.Keyprefix, j.Objectsize,j.osize,j.psize)
-	}
-
-	return
-    /*
-	objsizes = make([]int64)
-	if strings.Contains(*objsize, ",") {
-		sa := strings.Split(*objsize, ",")
-		for _, v := range sa {
-			value, err := unitsToBytes(v)
-			if err != nil {
-				exitErrorf("Error parameter -size %v", err)
-				return
-			}
-			objsizes = append(objsizes, value)
-		}
-	} else {
-		value, err := unitsToBytes(*objsize)
-		if err != nil {
-			exitErrorf("Error parameter -size %v", err)
-			return
-		}
-		objsizes = append(objsizes, value)
-	}
-
-	osize, err := unitsToBytes(*objsize)
-	if err != nil {
-		exitErrorf("Error parameter -size %v", err)
-	}
-
-	psize, err := unitsToBytes(*partsize)
-	if err != nil {
-		exitErrorf("Error parameter -partsize %v", err)
-	}
-
-	if *maxparts > 0 {
-		psize = int64(math.Ceil(float64(osize) / float64(*maxparts)))
 	}
 
 	config := aws.NewConfig().
@@ -277,53 +321,18 @@ func main() {
 		WithDisableComputeChecksums(*nosum).
 		WithS3DisableContentMD5Validation(*nomd5).
 		WithS3ForcePathStyle(*pathstyle)
-	t := time.Now()
-	o := NewObjectInputStream(osize)
-	bucket := *bucketname
-	filename := *objname
 
 	sess, err := session.NewSession(config)
 	if err != nil {
 		exitErrorf("Unable to create session %v", err)
 	}
-	// http://docs.aws.amazon.com/sdk-for-go/api/service/s3/s3manager/#NewUploader
-	uploader := s3manager.NewUploader(sess, func(u *s3manager.Uploader) {
-		u.Concurrency = *maxthreads
-		u.LeavePartsOnError = *delparts
-		if *maxparts > 0 {
-			u.MaxUploadParts = *maxparts
-			u.PartSize = psize
-			fmt.Println("Using part size", bytesToUnits(u.PartSize))
-		} else {
-			u.PartSize = psize
-		}
-	})
 
-	// Upload the file's body to S3 bucket as an object with the key being the
-	// same as the filename.
-	_, err = uploader.Upload(&s3manager.UploadInput{
-		Bucket: aws.String(bucket),
-		Key:    aws.String(filename),
+	for _, j := range jobs {
+        gwg.Add(1)
+        go startJob(sess, &j)
+    }
 
-		// The file to be uploaded. io.ReadSeeker is preferred as the Uploader
-		// will be able to optimize memory when uploading large content. io.Reader
-		// is supported, but will require buffering of the reader's bytes for
-		// each part.
-		Body: o,
-	})
-
-	if err != nil {
-		exitErrorf("Unable to upload %q to %q, %v", filename, bucket, err)
-	}
-
-	ptime := (o.CurrentTs.Sub(o.StartTs).Seconds())
-	utime := (time.Now().Sub(o.StartTs).Seconds())
-	rate := int64((float64(o.Pos)) / utime)
-	latency := o.StartTs.Sub(t).Seconds() * 1000
-	fmt.Println("#bucketname,objectname,objectsize in bytes,latency in ms,ptime in s,uploadtime in s,transferrate MB/s")
-	fmt.Printf("%s,%s,%v,%v,%v,%v,%s\n",
-		bucket, filename, *objsize, latency, ptime, utime, fmt.Sprintf("%s/s", bytesToUnits(rate)))
-    */
+    gwg.Wait()
 }
 
 func exitErrorf(msg string, args ...interface{}) {
