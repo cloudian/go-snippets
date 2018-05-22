@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -20,6 +21,16 @@ import (
 	"time"
 )
 
+type Overview struct {
+	OpsTotal   int64
+	BytesTotal int64
+	Start      int64
+	Snapshot   int64
+	mu         sync.Mutex
+}
+
+var overall Overview
+
 type Result struct {
 	Err          string `json:"err"`
 	Bucket       string `json:"bucket"`
@@ -31,6 +42,21 @@ type Result struct {
 	TransferRate string `json:"transferrate"`
 	StartTime    int64  `json:"starttime"`
 	EndTime      int64  `json:"endtime"`
+}
+
+func (r *Result) ResultArray() []string {
+	return []string{
+		r.Err,
+		r.Bucket,
+		r.Object,
+		r.ObjectSize,
+		r.Latency,
+		r.ProcessTime,
+		r.UploadTime,
+		r.TransferRate,
+		fmt.Sprintf("%v", r.StartTime),
+		fmt.Sprintf("%v", r.EndTime),
+	}
 }
 
 type Job struct {
@@ -46,7 +72,8 @@ type Job struct {
 	Workers     int    `json:"workers"`
 	Errorlog    string `json:"errorlog"`
 	Results     string `json:"results"`
-	Count       int    `json:"count"`
+	Count       int64  `json:"count"`
+	mu          sync.Mutex
 }
 
 type ObjectInputStream struct {
@@ -170,7 +197,7 @@ func bytesToUnits(b int64) string {
 		return fmt.Sprintf("%.2fKB", d)
 	}
 
-	return "err"
+	return fmt.Sprintf("err %v", b)
 }
 
 func unitsToBytes(u string) (r int64, err error) {
@@ -221,17 +248,37 @@ func startJob(session *session.Session, job *Job) {
 	var mu sync.Mutex
 	var ready bool = false
 	rchan := make(chan Result)
+	cchan := make(chan bool)
+	cv = sync.NewCond(&mu)
 
 	go func() {
+		f, err := os.OpenFile(job.Results, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			fmt.Printf("Error writing %s: %v\n", job.Results, err)
+		}
+		defer f.Close()
+		w := csv.NewWriter(f)
+		fmt.Println("Started result writer.")
 		for {
-			result := <-rchan
-			//write result
+			select {
+			case <-cchan:
+				break
+			case result := <-rchan:
+				if err := w.Write(result.ResultArray()); err != nil {
+					fmt.Printf("Error writing %s: %v\n", job.Results, err)
+				}
+
+				w.Flush()
+				if w.Error() != nil {
+					fmt.Printf("Error writing %s: %v\n", job.Results, w.Error())
+				}
+			}
 		}
 	}()
 
 	for i := 0; i < job.Workers; i++ {
 		wg.Add(1)
-		go func() {
+		go func(nr int) {
 			defer wg.Done()
 			mu.Lock()
 			for ready != true {
@@ -239,59 +286,73 @@ func startJob(session *session.Session, job *Job) {
 			}
 			mu.Unlock()
 
-			//Use an AtomixInt to count objects
-			//Create a Result that you hand over via a channel to write it
-			t := time.Now()
-			o := NewObjectInputStream(job.osize)
-			bucket := job.Bucket
-			filename := fmt.Sprintf("%s%d", job.Keyprefix, count)
-			// http://docs.aws.amazon.com/sdk-for-go/api/service/s3/s3manager/#NewUploader
-			uploader := s3manager.NewUploader(session, func(u *s3manager.Uploader) {
-				u.Concurrency = job.Concurrency
-				u.LeavePartsOnError = job.Delparts
-				if job.Maxparts > 0 {
-					u.MaxUploadParts = job.Maxparts
-					u.PartSize = job.psize
+			for {
+				job.mu.Lock()
+				current := job.Count
+				job.Count--
+				job.mu.Unlock()
+				if current > 0 {
+					t := time.Now()
+					o := NewObjectInputStream(job.osize)
+					bucket := job.Bucket
+					filename := fmt.Sprintf("%s%d", job.Keyprefix, current)
+					// http://docs.aws.amazon.com/sdk-for-go/api/service/s3/s3manager/#NewUploader
+					uploader := s3manager.NewUploader(session, func(u *s3manager.Uploader) {
+						u.Concurrency = job.Concurrency
+						u.LeavePartsOnError = job.Delparts
+						if job.Maxparts > 0 {
+							u.MaxUploadParts = job.Maxparts
+							u.PartSize = job.psize
+						} else {
+							if job.psize > 0 {
+								u.PartSize = job.psize
+							}
+						}
+					})
+
+					// Upload the file's body to S3 bucket as an object with the key being the
+					// same as the filename.
+					_, err := uploader.Upload(&s3manager.UploadInput{
+						Bucket: aws.String(bucket),
+						Key:    aws.String(filename),
+
+						// The file to be uploaded. io.ReadSeeker is preferred as the Uploader
+						// will be able to optimize memory when uploading large content. io.Reader
+						// is supported, but will require buffering of the reader's bytes for
+						// each part.
+						Body: o,
+					})
+
+					if err != nil {
+						rchan <- Result{Err: fmt.Sprintf("Unable to upload %q to %q, %v", filename, bucket, err)}
+					} else {
+						overall.mu.Lock()
+						overall.BytesTotal += o.Size
+						overall.OpsTotal++
+						overall.mu.Unlock()
+						ptime := (o.CurrentTs.Sub(o.StartTs).Seconds())
+						utime := (time.Now().Sub(o.StartTs).Seconds())
+						rate := int64((float64(o.Pos)) / utime)
+						latency := o.StartTs.Sub(t).Seconds() * 1000
+						r := Result{
+							Err:          "ok",
+							Bucket:       job.Bucket,
+							Object:       filename,
+							ObjectSize:   bytesToUnits(o.Size),
+							Latency:      fmt.Sprintf("%vms", latency),
+							ProcessTime:  fmt.Sprintf("%vs", ptime),
+							UploadTime:   fmt.Sprintf("%vs", utime),
+							TransferRate: fmt.Sprintf("%s/s", bytesToUnits(rate)),
+							StartTime:    t.UnixNano(),
+							EndTime:      time.Now().UnixNano(),
+						}
+						rchan <- r
+					}
 				} else {
-					u.PartSize = job.psize
+					break
 				}
-			})
-
-			// Upload the file's body to S3 bucket as an object with the key being the
-			// same as the filename.
-			_, err := uploader.Upload(&s3manager.UploadInput{
-				Bucket: aws.String(bucket),
-				Key:    aws.String(filename),
-
-				// The file to be uploaded. io.ReadSeeker is preferred as the Uploader
-				// will be able to optimize memory when uploading large content. io.Reader
-				// is supported, but will require buffering of the reader's bytes for
-				// each part.
-				Body: o,
-			})
-
-			if err != nil {
-				rchan <- Result{Err: fmt.Sprintf("Unable to upload %q to %q, %v", filename, bucket, err)}
-			} else {
-				ptime := (o.CurrentTs.Sub(o.StartTs).Seconds())
-				utime := (time.Now().Sub(o.StartTs).Seconds())
-				rate := int64((float64(o.Pos)) / utime)
-				latency := o.StartTs.Sub(t).Seconds() * 1000
-				r := Result{
-					Err:          "",
-					Bucket:       job.Bucket,
-					Object:       filename,
-					ObjectSize:   bytesToUnits(o.Size),
-					Latency:      fmt.Sprintf("%vms", o.StartTs.Sub(t).Seconds()*1000),
-					ProcessTime:  fmt.Sprintf("%vs", ptime),
-					UploadTime:   fmt.Sprintf("%vs", utime),
-					TransferRate: fmt.Sprintf("%s/s", bytesToUnits(rate)),
-					StartTime:    t.UnixNano(),
-					EndTime:      time.Now().UnixNano(),
-				}
-				rchan <- r
 			}
-		}()
+		}(i)
 	}
 
 	mu.Lock()
@@ -299,7 +360,7 @@ func startJob(session *session.Session, job *Job) {
 	mu.Unlock()
 	cv.Broadcast()
 	wg.Wait()
-	fmt.Printf("Start session: %v %v\n", session, job)
+	cchan <- true
 }
 
 var gwg sync.WaitGroup
@@ -322,22 +383,41 @@ func main() {
 		exitErrorf("Error parsing json %v", err)
 	}
 
-	for _, j := range jobs {
-		j.osize, err = unitsToBytes(j.Objectsize)
+	for j, _ := range jobs {
+		if jobs[j].Workers == 0 {
+			jobs[j].Workers = 1
+		}
+
+		jobs[j].osize, err = unitsToBytes(jobs[j].Objectsize)
+		if err != nil {
+			exitErrorf("Error parsing json %v", err)
+		}
+		fmt.Println("Objectsize", jobs[j].Objectsize, "osize", jobs[j].osize)
+
+		jobs[j].psize, err = unitsToBytes(jobs[j].Partsize)
 		if err != nil {
 			exitErrorf("Error parsing json %v", err)
 		}
 
-		j.psize, err = unitsToBytes(j.Partsize)
-		if err != nil {
-			exitErrorf("Error parsing json %v", err)
+		if jobs[j].psize != 0 {
+			pb, _ := unitsToBytes("5M")
+			if jobs[j].psize < pb {
+				jobs[j].psize, _ = unitsToBytes("5M")
+				fmt.Println("Ignoring part size, min 5M will be used now")
+			}
 		}
 
-		if j.Maxparts > 0 {
-			j.psize = int64(math.Ceil(float64(j.osize) / float64(j.Maxparts)))
+		if jobs[j].Maxparts > 0 {
+			jobs[j].psize = int64(math.Ceil(float64(jobs[j].osize) / float64(jobs[j].Maxparts)))
+			pb, _ := unitsToBytes("5M")
+			if jobs[j].psize < pb {
+				jobs[j].psize = 0
+				jobs[j].Maxparts = 0
+				fmt.Println("Ignoring the number of parts because part size is < 5M")
+			}
 		}
 
-		fmt.Println("Job ", j.Bucket, j.Keyprefix, j.Objectsize, j.osize, j.psize)
+		fmt.Println("Job ", jobs[j].Bucket, jobs[j].Keyprefix, jobs[j].Objectsize, jobs[j].osize, jobs[j].psize)
 	}
 
 	config := aws.NewConfig().
@@ -355,12 +435,38 @@ func main() {
 		exitErrorf("Unable to create session %v", err)
 	}
 
+	var cchan = make(chan bool)
+	overall.Start = time.Now().UnixNano()
+	go func() {
+		for {
+			select {
+			case <-cchan:
+				break
+			case <-time.After(1 * time.Second):
+				printit := false
+				overall.mu.Lock()
+				printit = overall.OpsTotal > 0
+				obytes := overall.BytesTotal
+				oops := overall.OpsTotal
+				overall.Snapshot = time.Now().UnixNano()
+				seconds := float64(overall.Snapshot-overall.Start) / float64(1000000000)
+				bytes := bytesToUnits(int64(float64(overall.BytesTotal) / seconds))
+				ops := float64(overall.OpsTotal) / seconds
+				overall.mu.Unlock()
+				if printit {
+					fmt.Printf("%d,%d,%.2f,%.2f,%s/s\n", oops, obytes, seconds, ops, bytes)
+				}
+			}
+		}
+	}()
+
 	for _, j := range jobs {
 		gwg.Add(1)
 		go startJob(sess, &j)
 	}
 
 	gwg.Wait()
+	cchan <- true
 }
 
 func exitErrorf(msg string, args ...interface{}) {

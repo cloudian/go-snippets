@@ -34,8 +34,8 @@
         "maxparts": 0,
         "delparts": true,
         "workers": 10,
-        "errorlog": "bucket1_4k_err.log",
-        "results": "bucket1_4k_results.csv",
+        "errorlog": "buckethuge_100G_err.log",
+        "results": "buckethuge_100G_results.csv",
         "count": 10
     }
 ]
