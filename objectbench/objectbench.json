@@ -1,15 +1,15 @@
 [
     {
         "bucket": "bucket1",
-        "keyprefix": "test9/",
+        "keyprefix": "test11/node1/",
         "objectsize": "10M",
-        "concurrency": 100,
+        "concurrency": 3,
         "partsize": "5M",
         "maxparts": 3,
         "delparts": true,
-        "workers": 1,
-        "errorlog": "bucket1_4k_err.log",
-        "results": "bucket1_4k_results.csv",
-        "count": 200
+        "workers": 100,
+        "errorlog": "bucket1_test11_err.log",
+        "results": "bucket1_test11_results.csv",
+        "count": 100000
     }
 ]

@@ -449,7 +449,7 @@ func main() {
 				ops := float64(overall.OpsTotal) / float64(overall.Elapsed)
 				seconds := overall.Elapsed
 				overall.mu.Unlock()
-				fmt.Printf("%d,%d,%d,%.2f,%s/s\n", oops, obytes, seconds, ops, bytes)
+				fmt.Printf("%d,%d,%d,%d,%.2f,%s/s\n", time.Now().UnixNano()/1000000000, seconds, oops, obytes, ops, bytes)
 				rwg.Done()
 				break
 			case <-time.After(1 * time.Second):
@@ -461,7 +461,7 @@ func main() {
 				ops := float64(overall.OpsTotal) / float64(overall.Elapsed)
 				seconds := overall.Elapsed
 				overall.mu.Unlock()
-				fmt.Printf("%d,%d,%d,%.2f,%s/s\n", oops, obytes, seconds, ops, bytes)
+				fmt.Printf("%d,%d,%d,%d,%.2f,%s/s\n", time.Now().UnixNano()/1000000000, seconds, oops, obytes, ops, bytes)
 			}
 		}
 	}()
