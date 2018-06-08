@@ -1,41 +1,15 @@
 [
     {
         "bucket": "bucket1",
-        "keyprefix": "node1/",
-        "objectsize": "4K",
-        "concurrency": 1,
-        "partsize": "4K",
-        "maxparts": 1,
+        "keyprefix": "test9/",
+        "objectsize": "10M",
+        "concurrency": 100,
+        "partsize": "5M",
+        "maxparts": 3,
         "delparts": true,
         "workers": 1,
         "errorlog": "bucket1_4k_err.log",
         "results": "bucket1_4k_results.csv",
         "count": 200
-    },
-    {
-        "bucket": "bucket2",
-        "keyprefix": "node1/",
-        "objectsize": "16K",
-        "concurrency": 1,
-        "partsize": "0",
-        "maxparts": 0,
-        "delparts": true,
-        "workers": 2,
-        "errorlog": "bucket1_16k_err.log",
-        "results": "bucket1_16k_results.csv",
-        "count": 100
-    },
-    {
-        "bucket": "buckethuge",
-        "keyprefix": "node1/",
-        "objectsize": "100G",
-        "concurrency": 10,
-        "partsize": "100M",
-        "maxparts": 0,
-        "delparts": true,
-        "workers": 10,
-        "errorlog": "buckethuge_100G_err.log",
-        "results": "buckethuge_100G_results.csv",
-        "count": 10
     }
 ]

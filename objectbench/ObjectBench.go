@@ -24,8 +24,7 @@ import (
 type Overview struct {
 	OpsTotal   int64
 	BytesTotal int64
-	Start      int64
-	Snapshot   int64
+	Elapsed      int64
 	mu         sync.Mutex
 }
 
@@ -363,6 +362,7 @@ func startJob(session *session.Session, job *Job) {
 	cchan <- true
 }
 
+var rwg sync.WaitGroup
 var gwg sync.WaitGroup
 
 func main() {
@@ -436,26 +436,32 @@ func main() {
 	}
 
 	var cchan = make(chan bool)
-	overall.Start = time.Now().UnixNano()
+	rwg.Add(1)
 	go func() {
 		for {
 			select {
 			case <-cchan:
-				break
-			case <-time.After(1 * time.Second):
-				printit := false
 				overall.mu.Lock()
-				printit = overall.OpsTotal > 0
+				overall.Elapsed++
 				obytes := overall.BytesTotal
 				oops := overall.OpsTotal
-				overall.Snapshot = time.Now().UnixNano()
-				seconds := float64(overall.Snapshot-overall.Start) / float64(1000000000)
-				bytes := bytesToUnits(int64(float64(overall.BytesTotal) / seconds))
-				ops := float64(overall.OpsTotal) / seconds
+				bytes := bytesToUnits(int64(float64(overall.BytesTotal) / float64(overall.Elapsed)))
+				ops := float64(overall.OpsTotal) / float64(overall.Elapsed)
+				seconds := overall.Elapsed
 				overall.mu.Unlock()
-				if printit {
-					fmt.Printf("%d,%d,%.2f,%.2f,%s/s\n", oops, obytes, seconds, ops, bytes)
-				}
+				fmt.Printf("%d,%d,%d,%.2f,%s/s\n", oops, obytes, seconds, ops, bytes)
+				rwg.Done()
+				break
+			case <-time.After(1 * time.Second):
+				overall.mu.Lock()
+				overall.Elapsed++
+				obytes := overall.BytesTotal
+				oops := overall.OpsTotal
+				bytes := bytesToUnits(int64(float64(overall.BytesTotal) / float64(overall.Elapsed)))
+				ops := float64(overall.OpsTotal) / float64(overall.Elapsed)
+				seconds := overall.Elapsed
+				overall.mu.Unlock()
+				fmt.Printf("%d,%d,%d,%.2f,%s/s\n", oops, obytes, seconds, ops, bytes)
 			}
 		}
 	}()
@@ -467,6 +473,7 @@ func main() {
 
 	gwg.Wait()
 	cchan <- true
+	rwg.Wait()
 }
 
 func exitErrorf(msg string, args ...interface{}) {
