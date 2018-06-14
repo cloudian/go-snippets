@@ -14,6 +14,8 @@ import (
 	"io/ioutil"
 	"math"
 	"math/rand"
+	"net"
+	"net/rpc"
 	"os"
 	"strconv"
 	"strings"
@@ -21,10 +23,26 @@ import (
 	"time"
 )
 
+type ObjectBenchService int
+type Args struct {
+	WorkRequest string
+}
+
+func (t *ObjectBenchService) Emit(args *Args, reply *int) error {
+	prepareJobs([]byte(args.WorkRequest))
+	*reply = 0
+	return nil
+}
+
+func (t *ObjectBenchService) Publish(args *Result, reply *int) error {
+	*reply = 0
+	return nil
+}
+
 type Overview struct {
 	OpsTotal   int64
 	BytesTotal int64
-	Elapsed      int64
+	Elapsed    int64
 	mu         sync.Mutex
 }
 
@@ -56,6 +74,31 @@ func (r *Result) ResultArray() []string {
 		fmt.Sprintf("%v", r.StartTime),
 		fmt.Sprintf("%v", r.EndTime),
 	}
+}
+
+type RPCJob struct {
+	Controller  string `json:"controller"`
+	Region      string `json:"region"`
+	Endpoint    string `json:"endpoint"`
+	Profile     string `json:"profile"`
+	Pathstyle   bool   `json:"pathstyle"`
+	Nossl       bool   `json:"nossl"`
+	Nomd5       bool   `json:"nomd5"`
+	Nosum       bool   `json:"nosum"`
+	Retries     int    `json:"retries"`
+	Bucket      string `json:"bucket"`
+	Keyprefix   string `json:"keyprefix"`
+	Objectsize  string `json:"objectsize"`
+	osize       int64
+	Concurrency int    `json:"concurrency"`
+	Partsize    string `json:"partsize"`
+	psize       int64
+	Maxparts    int    `json:"maxparts"`
+	Delparts    bool   `json:"delparts"`
+	Workers     int    `json:"workers"`
+	Errorlog    string `json:"errorlog"`
+	Results     string `json:"results"`
+	Count       int64  `json:"count"`
 }
 
 type Job struct {
@@ -156,6 +199,8 @@ var nosum = flag.Bool("nosum", false, "Disable creating checksums")
 var retries = flag.Int("retries", -1, "Set the number of retries default -1 (forever)")
 var cfg = flag.String("config", "objectbench.json", "config file in json format default objectbench.json")
 var skeleton = flag.Bool("skeleton", false, "Print a configuration example to stdout")
+var service = flag.Bool("service", false, "Run as a service, expecting rpc requests on 18088")
+var controllerOf = flag.String("controller", "", "comma separated list of ip addresses or names of objectbench services running on port 18088")
 var help = flag.Bool("h", false, "Print a helpful message.")
 
 func usage() {
@@ -172,6 +217,8 @@ func usage() {
 	fmt.Println("\t-retries    Set the number of retries default -1 forever")
 	fmt.Println("\t-config     Path to config file")
 	fmt.Println("\t-skeleton   Print a configuration file example to stdout and exit")
+	fmt.Println("\t-service    Run as a service expecting rpc requests on port 18088")
+	fmt.Println("\t-controller ip addresses or names of objectbench services running on port 18088")
 	fmt.Println()
 }
 
@@ -238,6 +285,119 @@ func unitsToBytes(u string) (r int64, err error) {
 	}
 
 	return 0, nil
+}
+
+func prepareJobs(rawjson []byte) {
+	var jobs []Job
+	err := json.Unmarshal(rawjson, &jobs)
+	if err != nil {
+		exitErrorf("Error parsing json %v", err)
+	}
+
+	if *controllerOf != "" {
+		netService := new(ObjectBenchService)
+		rpc.Register(netService)
+		listener, err := net.Listen("tcp", ":18088")
+		if err != nil {
+			exitErrorf("RPC Error %v\n", err)
+			return
+		}
+
+		rpc.Accept(listener)
+	}
+
+	for j, _ := range jobs {
+		if jobs[j].Workers == 0 {
+			jobs[j].Workers = 1
+		}
+
+		jobs[j].osize, err = unitsToBytes(jobs[j].Objectsize)
+		if err != nil {
+			exitErrorf("Error parsing json %v", err)
+		}
+		fmt.Println("Objectsize", jobs[j].Objectsize, "osize", jobs[j].osize)
+
+		jobs[j].psize, err = unitsToBytes(jobs[j].Partsize)
+		if err != nil {
+			exitErrorf("Error parsing json %v", err)
+		}
+
+		if jobs[j].psize != 0 {
+			pb, _ := unitsToBytes("5M")
+			if jobs[j].psize < pb {
+				jobs[j].psize, _ = unitsToBytes("5M")
+				fmt.Println("Ignoring part size, min 5M will be used now")
+			}
+		}
+
+		if jobs[j].Maxparts > 0 {
+			jobs[j].psize = int64(math.Ceil(float64(jobs[j].osize) / float64(jobs[j].Maxparts)))
+			pb, _ := unitsToBytes("5M")
+			if jobs[j].psize < pb {
+				jobs[j].psize = 0
+				jobs[j].Maxparts = 0
+				fmt.Println("Ignoring the number of parts because part size is < 5M")
+			}
+		}
+
+		fmt.Println("Job ", jobs[j].Bucket, jobs[j].Keyprefix, jobs[j].Objectsize, jobs[j].osize, jobs[j].psize)
+	}
+
+	config := aws.NewConfig().
+		WithCredentials(credentials.NewSharedCredentials("", *profile)).
+		WithEndpoint(*endpoint).
+		WithRegion(*region).
+		WithDisableSSL(*nossl).
+		WithMaxRetries(*retries).
+		WithDisableComputeChecksums(*nosum).
+		WithS3DisableContentMD5Validation(*nomd5).
+		WithS3ForcePathStyle(*pathstyle)
+
+	sess, err := session.NewSession(config)
+	if err != nil {
+		exitErrorf("Unable to create session %v", err)
+	}
+
+	var cchan = make(chan bool)
+	rwg.Add(1)
+	go func() {
+		for {
+			select {
+			case <-cchan:
+				overall.mu.Lock()
+				overall.Elapsed++
+				obytes := overall.BytesTotal
+				oops := overall.OpsTotal
+				bytes := bytesToUnits(int64(float64(overall.BytesTotal) / float64(overall.Elapsed)))
+				ops := float64(overall.OpsTotal) / float64(overall.Elapsed)
+				seconds := overall.Elapsed
+				overall.mu.Unlock()
+				fmt.Printf("%d,%d,%d,%d,%.2f,%s/s\n", time.Now().UnixNano()/1000000000, seconds, oops, obytes, ops, bytes)
+				rwg.Done()
+				break
+			case <-time.After(1 * time.Second):
+				overall.mu.Lock()
+				overall.Elapsed++
+				obytes := overall.BytesTotal
+				oops := overall.OpsTotal
+				bytes := bytesToUnits(int64(float64(overall.BytesTotal) / float64(overall.Elapsed)))
+				ops := float64(overall.OpsTotal) / float64(overall.Elapsed)
+				seconds := overall.Elapsed
+				overall.mu.Unlock()
+				fmt.Printf("%d,%d,%d,%d,%.2f,%s/s\n", time.Now().UnixNano()/1000000000, seconds, oops, obytes, ops, bytes)
+			}
+		}
+	}()
+
+	for _, j := range jobs {
+		gwg.Add(1)
+		go startJob(sess, &j)
+	}
+
+	gwg.Wait()
+	cchan <- true
+	rwg.Wait()
+
 }
 
 func startJob(session *session.Session, job *Job) {
@@ -372,108 +532,24 @@ func main() {
 		return
 	}
 
-	rawjson, err := ioutil.ReadFile(*cfg)
-	if err != nil {
-		exitErrorf("Error reading config %v", err)
-	}
-
-	var jobs []Job
-	err = json.Unmarshal(rawjson, &jobs)
-	if err != nil {
-		exitErrorf("Error parsing json %v", err)
-	}
-
-	for j, _ := range jobs {
-		if jobs[j].Workers == 0 {
-			jobs[j].Workers = 1
-		}
-
-		jobs[j].osize, err = unitsToBytes(jobs[j].Objectsize)
+	if *service {
+		netService := new(ObjectBenchService)
+		rpc.Register(netService)
+		listener, err := net.Listen("tcp", ":18088")
 		if err != nil {
-			exitErrorf("Error parsing json %v", err)
+			exitErrorf("RPC Error %v\n", err)
+			return
 		}
-		fmt.Println("Objectsize", jobs[j].Objectsize, "osize", jobs[j].osize)
 
-		jobs[j].psize, err = unitsToBytes(jobs[j].Partsize)
+		rpc.Accept(listener)
+	} else {
+		rawjson, err := ioutil.ReadFile(*cfg)
 		if err != nil {
-			exitErrorf("Error parsing json %v", err)
+			exitErrorf("Error reading config %v", err)
 		}
 
-		if jobs[j].psize != 0 {
-			pb, _ := unitsToBytes("5M")
-			if jobs[j].psize < pb {
-				jobs[j].psize, _ = unitsToBytes("5M")
-				fmt.Println("Ignoring part size, min 5M will be used now")
-			}
-		}
-
-		if jobs[j].Maxparts > 0 {
-			jobs[j].psize = int64(math.Ceil(float64(jobs[j].osize) / float64(jobs[j].Maxparts)))
-			pb, _ := unitsToBytes("5M")
-			if jobs[j].psize < pb {
-				jobs[j].psize = 0
-				jobs[j].Maxparts = 0
-				fmt.Println("Ignoring the number of parts because part size is < 5M")
-			}
-		}
-
-		fmt.Println("Job ", jobs[j].Bucket, jobs[j].Keyprefix, jobs[j].Objectsize, jobs[j].osize, jobs[j].psize)
+		prepareJobs(rawjson)
 	}
-
-	config := aws.NewConfig().
-		WithCredentials(credentials.NewSharedCredentials("", *profile)).
-		WithEndpoint(*endpoint).
-		WithRegion(*region).
-		WithDisableSSL(*nossl).
-		WithMaxRetries(*retries).
-		WithDisableComputeChecksums(*nosum).
-		WithS3DisableContentMD5Validation(*nomd5).
-		WithS3ForcePathStyle(*pathstyle)
-
-	sess, err := session.NewSession(config)
-	if err != nil {
-		exitErrorf("Unable to create session %v", err)
-	}
-
-	var cchan = make(chan bool)
-	rwg.Add(1)
-	go func() {
-		for {
-			select {
-			case <-cchan:
-				overall.mu.Lock()
-				overall.Elapsed++
-				obytes := overall.BytesTotal
-				oops := overall.OpsTotal
-				bytes := bytesToUnits(int64(float64(overall.BytesTotal) / float64(overall.Elapsed)))
-				ops := float64(overall.OpsTotal) / float64(overall.Elapsed)
-				seconds := overall.Elapsed
-				overall.mu.Unlock()
-				fmt.Printf("%d,%d,%d,%d,%.2f,%s/s\n", time.Now().UnixNano()/1000000000, seconds, oops, obytes, ops, bytes)
-				rwg.Done()
-				break
-			case <-time.After(1 * time.Second):
-				overall.mu.Lock()
-				overall.Elapsed++
-				obytes := overall.BytesTotal
-				oops := overall.OpsTotal
-				bytes := bytesToUnits(int64(float64(overall.BytesTotal) / float64(overall.Elapsed)))
-				ops := float64(overall.OpsTotal) / float64(overall.Elapsed)
-				seconds := overall.Elapsed
-				overall.mu.Unlock()
-				fmt.Printf("%d,%d,%d,%d,%.2f,%s/s\n", time.Now().UnixNano()/1000000000, seconds, oops, obytes, ops, bytes)
-			}
-		}
-	}()
-
-	for _, j := range jobs {
-		gwg.Add(1)
-		go startJob(sess, &j)
-	}
-
-	gwg.Wait()
-	cchan <- true
-	rwg.Wait()
 }
 
 func exitErrorf(msg string, args ...interface{}) {
