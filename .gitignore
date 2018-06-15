@@ -6,3 +6,8 @@ playground/rpcc
 playground/expand
 rpc/client_rpc
 rpc/server_rpc
+parallel/parallel
+parallel/parallel2
+parallel/parallel3
+parallel/parallel4
+**/Icon
