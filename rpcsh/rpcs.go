@@ -35,10 +35,10 @@ func (t *CmdService) RunCommand(args *Args, result *Result) error {
 		return err
 	}
 	fmt.Printf("%v\n", p)
+	fmt.Printf("%v\n", args.Argv[1:])
 	cmd := exec.Command(p, args.Argv[1:]...)
-	r := Result{}
-	r.Cmd = p
-	r.Id = args.Id
+	result.Cmd = p
+	result.Id = args.Id
 	outs := new(bytes.Buffer)
 	errs := new(bytes.Buffer)
 	cmd.Stdout = outs
@@ -48,8 +48,8 @@ func (t *CmdService) RunCommand(args *Args, result *Result) error {
 		return err
 	}
 
-	r.Stdout = outs.String()
-	r.Stderr = errs.String()
+	result.Stdout = outs.String()
+	result.Stderr = errs.String()
 
 	return nil
 }

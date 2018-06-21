@@ -26,7 +26,7 @@ type Result struct {
 
 func readIps(fileName string) []string {
 	ips := make([]string, 0)
-	if fh, err := os.Open(fileName); err != nil {
+	if fh, err := os.Open(fileName); err == nil {
 		defer fh.Close()
 		r := csv.NewReader(fh)
 		for {
@@ -52,6 +52,7 @@ func main() {
 	}
 
 	prog := path.Base(os.Args[0])
+	fmt.Println("prog is", prog)
 	if prog == "all" {
 		/*
 		   args := Args{Message: *msg}
@@ -82,13 +83,17 @@ func main() {
 			}
 
 			args := Args{}
-			res := new(Result)
+			res := Result{}
 			args.Id = rand.Int63()
 			args.Argv = os.Args[1:]
-			err = client.Call("CmdService.RunCommand", args, res)
+			err = client.Call("CmdService.RunCommand", args, &res)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error running command on %s: %v", ip, err)
+				return
 			}
+			fmt.Println(res.Id, res.Cmd)
+			fmt.Println(res.Stdout, res.Stderr)
+			fmt.Println("=")
 		}
 	}
 }
