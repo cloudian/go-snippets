@@ -25,6 +25,8 @@ type Result struct {
 }
 
 func readIps(fileName string) []string {
+	dcFilter := os.ExpandEnv("${RPCSH_DC_FILTER}")
+	regionFilter := os.ExpandEnv("${RPCSH_REGION_FILTER}")
 	ips := make([]string, 0)
 	if fh, err := os.Open(fileName); err == nil {
 		defer fh.Close()
@@ -37,6 +39,19 @@ func readIps(fileName string) []string {
 			if err != nil {
 				log.Printf("error reading line in %s: %v", fileName, err)
 			}
+
+			if regionFilter != "" {
+				if record[0] != regionFilter {
+					continue
+				}
+			}
+
+			if dcFilter != "" {
+				if record[3] != dcFilter {
+					continue
+				}
+			}
+
 			ips = append(ips, record[2])
 			fmt.Println(record[2])
 		}
@@ -45,14 +60,17 @@ func readIps(fileName string) []string {
 }
 
 func main() {
-	ips := readIps("/root/cloudian/survey.csv")
+	ipFile := os.ExpandEnv("${RPCSH_IP_FILE}")
+	if ipFile == "" {
+		ipFile = "/root/cloudian/survey.csv"
+	}
+	ips := readIps(ipFile)
 	if len(ips) == 0 {
-		fmt.Println("No ips found")
+		fmt.Println("No ips found or no ips match your region or dc filter")
 		return
 	}
 
 	prog := path.Base(os.Args[0])
-	fmt.Println("prog is", prog)
 	if prog == "all" {
 		/*
 		   args := Args{Message: *msg}
@@ -85,15 +103,16 @@ func main() {
 			args := Args{}
 			res := Result{}
 			args.Id = rand.Int63()
+			fmt.Fprintf(os.Stdout, "Starting command on %s with id %d\n", ip, args.Id)
 			args.Argv = os.Args[1:]
 			err = client.Call("CmdService.RunCommand", args, &res)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error running command on %s: %v", ip, err)
 				return
 			}
-			fmt.Println(res.Id, res.Cmd)
-			fmt.Println(res.Stdout, res.Stderr)
-			fmt.Println("=")
+			fmt.Println(res.Id)
+			fmt.Println(res.Stdout, "\n")
+			fmt.Fprintf(os.Stderr, "%s\n\n", res.Stderr)
 		}
 	}
 }

@@ -34,8 +34,7 @@ func (t *CmdService) RunCommand(args *Args, result *Result) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("%v\n", p)
-	fmt.Printf("%v\n", args.Argv[1:])
+	fmt.Printf("Running %v %v\n", p, args.Argv[1:])
 	cmd := exec.Command(p, args.Argv[1:]...)
 	result.Cmd = p
 	result.Id = args.Id
