@@ -88,14 +88,19 @@ func main() {
 				defer wg.Done()
 				args := Args{}
 				result := Result{}
+				args.Id = rand.Int63()
+				mu.Lock()
+				fmt.Fprintf(os.Stdout, "Starting command on %s with id %d\n", ip, args.Id)
+				mu.Unlock()
+				args.Argv = os.Args[1:]
 				serviceCall := client.Go("CmdService.RunCommand", args, &result, nil)
 				select {
 				case reply := <-serviceCall.Done:
 					if reply != nil {
 						if reply.Error == nil {
 							mu.Lock()
-							fmt.Fprintln(os.Stdout, "%s\n", reply.Reply.(*Result).Stdout)
-							fmt.Fprintln(os.Stderr, "%s\n", reply.Reply.(*Result).Stderr)
+							fmt.Fprintf(os.Stdout, "%s\n", reply.Reply.(*Result).Stdout)
+							fmt.Fprintf(os.Stderr, "%s\n", reply.Reply.(*Result).Stderr)
 							mu.Unlock()
 						} else {
 							mu.Lock()
