@@ -9,7 +9,11 @@ import (
 	"net/rpc"
 	"os"
 	"path"
+	"sync"
 )
+
+/* Protect stdout */
+var mu sync.Mutex
 
 type Args struct {
 	Id   int64
@@ -72,25 +76,41 @@ func main() {
 
 	prog := path.Base(os.Args[0])
 	if prog == "all" {
-		/*
-		   args := Args{Message: *msg}
-		   result := Result{}
-		   serviceCall := client.Go("NetService.ToUpper", args, &result, nil)
-		   select {
-		   case <-time.After(time.Second * 1):
-		       fmt.Println("Timeout")
-		   case reply := <-serviceCall.Done:
-		       if reply != nil {
-		           if reply.Error == nil {
-		               fmt.Println("Reply:", reply.Reply.(*Result).Result)
-		           } else {
-		               fmt.Fprintf(os.Stderr, "Err: %v\n", reply.Error)
-		           }
-		       } else {
-		           fmt.Println("Error")
-		       }
-		   }
-		*/
+		var wg sync.WaitGroup
+		for _, ip := range ips {
+			client, err := rpc.Dial("tcp", fmt.Sprintf("%s:9999", ip))
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			}
+
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				args := Args{}
+				result := Result{}
+				serviceCall := client.Go("CmdService.RunCommand", args, &result, nil)
+				select {
+				case reply := <-serviceCall.Done:
+					if reply != nil {
+						if reply.Error == nil {
+							mu.Lock()
+							fmt.Fprintln(os.Stdout, "%s\n", reply.Reply.(*Result).Stdout)
+							fmt.Fprintln(os.Stderr, "%s\n", reply.Reply.(*Result).Stderr)
+							mu.Unlock()
+						} else {
+							mu.Lock()
+							fmt.Fprintf(os.Stderr, "Err: %s %v\n", ip, reply.Error)
+							mu.Unlock()
+						}
+					} else {
+						mu.Lock()
+						fmt.Fprintf(os.Stderr, "Err: Never happens %s\n", ip)
+						mu.Unlock()
+					}
+				}
+			}()
+		}
+		wg.Wait()
 	}
 
 	if prog == "all_wait" {
