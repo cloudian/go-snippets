@@ -28,6 +28,8 @@ type Result struct {
 	err    error
 }
 
+var debugOutput string = os.ExpandEnv("${RPCSH_DEBUG}")
+
 func readIps(fileName string) []string {
 	dcFilter := os.ExpandEnv("${RPCSH_DC_FILTER}")
 	regionFilter := os.ExpandEnv("${RPCSH_REGION_FILTER}")
@@ -42,6 +44,12 @@ func readIps(fileName string) []string {
 			}
 			if err != nil {
 				log.Printf("error reading line in %s: %v", fileName, err)
+				return ips
+			}
+
+			if len(record) < 4 {
+				log.Printf("error reading line in %s: expecting survey file format", fileName)
+				return ips
 			}
 
 			if regionFilter != "" {
@@ -57,7 +65,9 @@ func readIps(fileName string) []string {
 			}
 
 			ips = append(ips, record[2])
-			fmt.Println(record[2])
+			if debugOutput == "1" {
+				fmt.Println("Add ip", record[2], "as command receiver.")
+			}
 		}
 	}
 	return ips
@@ -68,6 +78,11 @@ func main() {
 	if ipFile == "" {
 		ipFile = "/root/cloudian/survey.csv"
 	}
+
+	if debugOutput == "1" {
+		fmt.Println("Using", ipFile, "to read ip addresses.")
+	}
+
 	ips := readIps(ipFile)
 	if len(ips) == 0 {
 		fmt.Println("No ips found or no ips match your region or dc filter")
@@ -80,7 +95,8 @@ func main() {
 		for _, ip := range ips {
 			client, err := rpc.Dial("tcp", fmt.Sprintf("%s:9999", ip))
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				fmt.Fprintf(os.Stderr, "Connect error: %v ... skipping\n", err)
+				continue
 			}
 
 			wg.Add(1)
@@ -90,7 +106,7 @@ func main() {
 				result := Result{}
 				args.Id = rand.Int63()
 				mu.Lock()
-				fmt.Fprintf(os.Stdout, "Starting command on %s with id %d\n", ip, args.Id)
+				fmt.Fprintf(os.Stdout, "[%s:%d]: '%v'\n", ip, args.Id, os.Args[1:])
 				mu.Unlock()
 				args.Argv = os.Args[1:]
 				serviceCall := client.Go("CmdService.RunCommand", args, &result, nil)
@@ -122,13 +138,14 @@ func main() {
 		for _, ip := range ips {
 			client, err := rpc.Dial("tcp", fmt.Sprintf("%s:9999", ip))
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				fmt.Fprintf(os.Stderr, "Connect error: %v ... skipping\n", err)
+				continue
 			}
 
 			args := Args{}
 			res := Result{}
 			args.Id = rand.Int63()
-			fmt.Fprintf(os.Stdout, "Starting command on %s with id %d\n", ip, args.Id)
+			fmt.Fprintf(os.Stdout, "[%s:%d]: '%v'\n", ip, args.Id, os.Args[1:])
 			args.Argv = os.Args[1:]
 			err = client.Call("CmdService.RunCommand", args, &res)
 			if err != nil {
@@ -137,7 +154,7 @@ func main() {
 			}
 			fmt.Println(res.Id)
 			fmt.Println(res.Stdout, "\n")
-			fmt.Fprintf(os.Stderr, "%s\n\n", res.Stderr)
+			fmt.Fprintf(os.Stderr, "%s\n", res.Stderr)
 		}
 	}
 }
