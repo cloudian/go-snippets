@@ -33,6 +33,7 @@ var debugOutput string = os.ExpandEnv("${RPCSH_DEBUG}")
 func readIps(fileName string) []string {
 	dcFilter := os.ExpandEnv("${RPCSH_DC_FILTER}")
 	regionFilter := os.ExpandEnv("${RPCSH_REGION_FILTER}")
+	ipFilter := os.ExpandEnv("${RPCSH_IP_EXCLUDE}")
 	ips := make([]string, 0)
 	if fh, err := os.Open(fileName); err == nil {
 		defer fh.Close()
@@ -53,13 +54,19 @@ func readIps(fileName string) []string {
 			}
 
 			if regionFilter != "" {
-				if record[0] != regionFilter {
+				if record[0] == regionFilter {
 					continue
 				}
 			}
 
 			if dcFilter != "" {
-				if record[3] != dcFilter {
+				if record[3] == dcFilter {
+					continue
+				}
+			}
+
+			if ipFilter != "" {
+				if record[2] == ipFilter {
 					continue
 				}
 			}
