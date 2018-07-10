@@ -100,20 +100,20 @@ func main() {
 	if prog == "all" {
 		var wg sync.WaitGroup
 		for _, ip := range ips {
-			client, err := rpc.Dial("tcp", fmt.Sprintf("%s:9999", ip))
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Connect error: %v ... skipping\n", err)
-				continue
-			}
-
 			wg.Add(1)
-			go func() {
+			go func(ipaddr string) {
 				defer wg.Done()
+				client, err := rpc.Dial("tcp", fmt.Sprintf("%s:9999", ipaddr))
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Connect error: %v ... skipping\n", err)
+					return
+				}
+
 				args := Args{}
 				result := Result{}
 				args.Id = rand.Int63()
 				mu.Lock()
-				fmt.Fprintf(os.Stdout, "[%s:%d]: '%v'\n", ip, args.Id, os.Args[1:])
+				fmt.Fprintf(os.Stdout, "[%s:%d]: '%v'\n", ipaddr, args.Id, os.Args[1:])
 				mu.Unlock()
 				args.Argv = os.Args[1:]
 				serviceCall := client.Go("CmdService.RunCommand", args, &result, nil)
@@ -127,7 +127,7 @@ func main() {
 							mu.Unlock()
 						} else {
 							mu.Lock()
-							fmt.Fprintf(os.Stderr, "Err: %s %v\n", ip, reply.Error)
+							fmt.Fprintf(os.Stderr, "Err: %s %v\n", ipaddr, reply.Error)
 							mu.Unlock()
 						}
 					} else {
@@ -136,7 +136,7 @@ func main() {
 						mu.Unlock()
 					}
 				}
-			}()
+			}(ip)
 		}
 		wg.Wait()
 	}
