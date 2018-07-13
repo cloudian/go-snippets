@@ -9,6 +9,7 @@ import (
 	"net/rpc"
 	"os"
 	"path"
+	"regexp"
 	"sync"
 )
 
@@ -103,6 +104,7 @@ func main() {
 			wg.Add(1)
 			go func(ipaddr string) {
 				defer wg.Done()
+				re := regexp.MustCompile("[^\\s\n]")
 				client, err := rpc.Dial("tcp", fmt.Sprintf("%s:9999", ipaddr))
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Connect error: %v ... skipping\n", err)
@@ -112,9 +114,11 @@ func main() {
 				args := Args{}
 				result := Result{}
 				args.Id = rand.Int63()
-				mu.Lock()
-				fmt.Fprintf(os.Stdout, "[%s:%d]: '%v'\n", ipaddr, args.Id, os.Args[1:])
-				mu.Unlock()
+				if debugOutput == "1" {
+					mu.Lock()
+					fmt.Fprintf(os.Stdout, "[%s:%d]: '%v'\n", ipaddr, args.Id, os.Args[1:])
+					mu.Unlock()
+				}
 				args.Argv = os.Args[1:]
 				serviceCall := client.Go("CmdService.RunCommand", args, &result, nil)
 				select {
@@ -122,8 +126,10 @@ func main() {
 					if reply != nil {
 						if reply.Error == nil {
 							mu.Lock()
-							fmt.Fprintf(os.Stdout, "%s\n", reply.Reply.(*Result).Stdout)
-							fmt.Fprintf(os.Stderr, "%s\n", reply.Reply.(*Result).Stderr)
+							fmt.Fprintf(os.Stdout, "[%s] %s", ipaddr, reply.Reply.(*Result).Stdout)
+							if re.MatchString(reply.Reply.(*Result).Stderr) {
+								fmt.Fprintf(os.Stderr, "[%s] %s", ipaddr, reply.Reply.(*Result).Stderr)
+							}
 							mu.Unlock()
 						} else {
 							mu.Lock()
