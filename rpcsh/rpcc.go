@@ -10,6 +10,7 @@ import (
 	"os"
 	"path"
 	"regexp"
+	"strings"
 	"sync"
 )
 
@@ -32,9 +33,10 @@ type Result struct {
 var debugOutput string = os.ExpandEnv("${RPCSH_DEBUG}")
 
 func readIps(fileName string) []string {
-	dcFilter := os.ExpandEnv("${RPCSH_DC_FILTER}")
-	regionFilter := os.ExpandEnv("${RPCSH_REGION_FILTER}")
-	ipFilter := os.ExpandEnv("${RPCSH_IP_EXCLUDE}")
+	dcFilter := strings.Split(os.ExpandEnv("${RPCSH_DC_FILTER}"), ",")
+	regionFilter := strings.Split(os.ExpandEnv("${RPCSH_REGION_FILTER}"), ",")
+	ipFilter := strings.Split(os.ExpandEnv("${RPCSH_IP_EXCLUDE}"), ",")
+	ipOne := os.ExpandEnv("${RPCSH_IP_ONLY}")
 	ips := make([]string, 0)
 	if fh, err := os.Open(fileName); err == nil {
 		defer fh.Close()
@@ -54,21 +56,34 @@ func readIps(fileName string) []string {
 				return ips
 			}
 
-			if regionFilter != "" {
-				if record[0] == regionFilter {
-					continue
+			if ipOne != "" {
+				if record[2] == ipOne {
+					ips = append(ips, record[2])
+					return ips
 				}
 			}
 
-			if dcFilter != "" {
-				if record[3] == dcFilter {
-					continue
+			if len(regionFilter) != 0 {
+				for i := range regionFilter {
+					if record[0] == strings.Trim(regionFilter[i], " \t\n") {
+						continue
+					}
 				}
 			}
 
-			if ipFilter != "" {
-				if record[2] == ipFilter {
-					continue
+			if len(dcFilter) != 0 {
+				for i := range dcFilter {
+					if record[3] == strings.Trim(dcFilter[i], " \t\n") {
+						continue
+					}
+				}
+			}
+
+			if len(ipFilter) != 0 {
+				for i := range ipFilter {
+					if record[2] == strings.Trim(ipFilter[i], " \t\n") {
+						continue
+					}
 				}
 			}
 
@@ -82,9 +97,20 @@ func readIps(fileName string) []string {
 }
 
 func main() {
+	if len(os.Args) == 1 {
+		fmt.Println("all - executes args in parallel on all nodes")
+		fmt.Println("all_wait - executes args one by one on all nodes")
+		fmt.Println("set RPCSH_DEBUG to get more verbose output")
+		fmt.Println("set RPCSH_DC_FILTER (comma seperated list of DC names to exclude)")
+		fmt.Println("set RPCSH_REGION_FILTER (comma seperated list of regions to exclude)")
+		fmt.Println("set RPCSH_IP_EXCLUDE (comma seperated list of ip addresses to exclude)")
+		fmt.Println("set RPCSH_IP_ONLY to run only on the host with this ip address")
+		return
+	}
+
 	ipFile := os.ExpandEnv("${RPCSH_IP_FILE}")
 	if ipFile == "" {
-		ipFile = "/root/cloudian/survey.csv"
+		ipFile = "/root/CloudianPackages/survey.csv"
 	}
 
 	if debugOutput == "1" {

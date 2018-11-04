@@ -6,7 +6,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
-	"time"
+//	"time"
     "flag"
 )
 
@@ -27,7 +27,7 @@ func Runner(cmd string) {
 		cv.Wait()
 	}
 
-	fmt.Println("Runner woke up", cmd, time.Now().UnixNano())
+//fmt.Println("Runner woke up", cmd, time.Now().UnixNano())
 	mu.Unlock()
 	err := c.Run()
 	if err != nil {
@@ -75,7 +75,7 @@ func main() {
     for _, arg := range varargs {
 		wg.Add(1)
         cmd := fmt.Sprintf(*command, arg)
-        fmt.Println(cmd)
+        //fmt.Println(cmd)
 		go Runner(cmd)
     }
 
