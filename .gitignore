@@ -10,5 +10,6 @@ parallel/parallel
 parallel/parallel2
 parallel/parallel3
 parallel/parallel4
+amazon/*
 **/Icon
 **/.**.swp
