@@ -135,6 +135,7 @@ func NewObjectInputStream(size int64) (o *ObjectInputStream) {
 }
 
 func (cin *ObjectInputStream) Read(b []byte) (n int, err error) {
+	var copied int64 = 0
 	if cin.Pos >= cin.Size {
 		return 0, io.EOF
 	}
@@ -144,18 +145,19 @@ func (cin *ObjectInputStream) Read(b []byte) (n int, err error) {
 		cin.StartTs = time.Now()
 	}
 
-	var sz int64 = 0
-	if int64(len(b)) > (cin.Size - cin.Pos) {
-		sz = (cin.Size - cin.Pos)
-	} else {
-		sz = int64(len(b))
+	for cin.Pos < cin.Size {
+		var sz int64 = cin.Size - cin.Pos
+		if sz > 8000000 {
+			sz = 8000000
+		}
+
+		buffer := make([]byte, sz)
+		_, _ = rand.Read(buffer)
+		copied = copy(b, buffer)
+	
+		cin.Pos += int64(copied)
 	}
 
-	buffer := make([]byte, sz)
-	_, _ = rand.Read(buffer)
-	copied := copy(b, buffer)
-
-	cin.Pos += int64(copied)
 	cin.CurrentTs = time.Now()
 	n = copied
 	return
